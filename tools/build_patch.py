@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Build a client patch: every look in a pack's data file as a 3.3.5a creature display.
 
-    python3 build_patch.py --dbc <dir> --cache <download dir> --work <dir> --out patch-R.MPQ \\
-        [--pack forms|totems] [--sql forms.sql] [--max-texture 1024]
+    python3 build_patch.py --pack <pack dir> --dbc <dir> --cache <download dir> --work <dir> \\
+        --out patch-R.MPQ [--sql forms.sql] [--max-texture 1024]
 
---pack picks what to build: the druid form looks (data/looks.tsv, patch-R) or the shaman totem
-looks (data/totems.tsv, patch-V).
+--pack is a folder with a pack.json: the checkout of a pack repo, such as
+wow-mod-retail-druid-forms (patch-R) or wow-mod-retail-shaman-totems (patch-V). It names the
+pack's data file and id blocks; the README lists every field.
 
 --dbc holds the CreatureDisplayInfo.dbc, CreatureModelData.dbc and AnimationData.dbc the realm's
 players already have. A patch MPQ replaces whole files, so if another patch the players use ships
@@ -22,6 +23,7 @@ import argparse
 import collections
 import ctypes
 import hashlib
+import json
 import os
 import struct
 import sys
@@ -30,30 +32,36 @@ from check_m2 import check
 from fetch import casc, db2, db2_rows, listfile
 from m2creature import Converter, Retail
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-# A pack: its data file, where its models go in the client, its id blocks and the stock display
-# each kind of look clones for sounds, blood, footprints and size class.
+# A pack's pack.json: its data file, where its models go in the client, its id blocks and the
+# stock display each kind of look clones for sounds, blood, footprints and size class.
+#   looks           the data file, relative to the pack folder
+#   root            folder in the client for the pack's models
+#   first_display   CreatureDisplayInfo ids of the ported looks start here
 #   first_model     CreatureModelData ids (ids the base client uses move past the block)
 #   preview_base    creature_template entries for the addon's previews (500 per pack); a look's
 #                   entry is base + (display - first_display) unless its row has a preview column
+#   subname         subname of those preview creatures
+#   sort_base       SortOrder of the pack's first look in mod_transmog_plus_forms
 #   prune_textures  leave out textures only the dropped particles and extra passes used, and
 #                   draw a two-texture effect mesh with its second texture when the first is
 #                   only a mask (MASK_WORDS in its file name)
-PACKS = {
-    "forms": dict(
-        looks="looks.tsv", root="Creature\\RetailForms", first_display=95000, first_model=9500,
-        preview_base=9501000, subname="Druid Form", sort_base=0, prune_textures=False,
-        template={"bear": 2281, "cat": 892, "travel": 918, "aquatic": 2428, "flight": 21243,
-                  "moonkin": 15374, "tree": 864},
-        source="data/looks.tsv. The display ids are in that repo's patch-R.MPQ."),
-    "totems": dict(
-        looks="totems.tsv", root="Creature\\RetailTotems", first_display=96000, first_model=96000,
-        preview_base=9501500, subname="Totem", sort_base=1000, prune_textures=True,
-        template={"fire": 4589, "earth": 4588, "water": 4587, "air": 4590},
-        source="data/totems.tsv. The display ids from 96000 are in that repo's patch-V.MPQ; the rest are\n"
-               "-- the 3.3.5a client's own totems."),
-}
+#   template        {kind of look: stock CreatureDisplayInfo id it clones}
+#   source          where the looks come from, for the head of the generated SQL
+PACK_FIELDS = ("looks", "root", "first_display", "first_model", "preview_base", "subname", "sort_base",
+               "prune_textures", "template", "source")
+
+
+def load_pack(folder):
+    path = os.path.join(folder, "pack.json")
+    if not os.path.isfile(path):
+        sys.exit("no pack.json in %s: --pack takes a pack repo's folder" % folder)
+    with open(path, encoding="utf-8") as f:
+        pack = json.load(f)
+    missing = [k for k in PACK_FIELDS if k not in pack]
+    if missing:
+        sys.exit("%s: missing %s" % (path, ", ".join(missing)))
+    pack["folder"] = folder
+    return pack
 
 
 MASK_WORDS = ("mask", "square_soft", "gradient")
@@ -157,7 +165,7 @@ def pack_mpq(out, files):
 # --- build -------------------------------------------------------------------------------------
 
 def load_looks(pack):
-    path = os.path.join(HERE, "..", "data", pack["looks"])
+    path = os.path.join(pack["folder"], pack["looks"])
     lines = open(path, encoding="utf-8").read().splitlines()
     head = lines[0].split("\t")
     return [dict(zip(head, l.split("\t"))) for l in lines[1:]]
@@ -173,7 +181,7 @@ def main():
     ap.add_argument("--cache", required=True)
     ap.add_argument("--work", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--pack", choices=sorted(PACKS), default="forms")
+    ap.add_argument("--pack", default=".", help="the pack's folder (holds pack.json); default: here")
     ap.add_argument("--sql")
     ap.add_argument("--max-texture", type=int, default=1024)
     ap.add_argument("--only", help="comma-separated display ids (test builds)")
@@ -183,7 +191,7 @@ def main():
                          "from that patch's copies with --dbc")
     args = ap.parse_args()
     os.makedirs(args.work, exist_ok=True)
-    pack = PACKS[args.pack]
+    pack = load_pack(args.pack)
 
     looks = load_looks(pack)
     if args.only:
@@ -396,9 +404,25 @@ def fl(v):
     return "%g" % struct.unpack("<f", struct.pack("<I", v))[0]
 
 
+# mod-transmog-plus's own table (its data/sql/world/mod_transmog_plus_2026_10_08_forms.sql): keep
+# the two the same. A pack's SQL makes it too, because the server applies every module's SQL in
+# file name order and a pack's can come before mod-transmog-plus's.
+FORMS_TABLE = """CREATE TABLE IF NOT EXISTS `mod_transmog_plus_forms` (
+    `DisplayId` int(10) unsigned NOT NULL COMMENT 'CreatureDisplayInfo id from the client patch',
+    `Form` varchar(16) NOT NULL COMMENT 'bear, cat, travel, aquatic, flight, moonkin or tree',
+    `Name` varchar(80) NOT NULL,
+    `UnlockPhase` tinyint(3) unsigned NOT NULL DEFAULT 0 COMMENT 'individual progression phase cleared (quest 66000+n); 0 = from the start',
+    `PreviewCreature` int(10) unsigned NOT NULL DEFAULT 0 COMMENT 'creature_template entry with this display, for the addon preview',
+    `SortOrder` int(10) unsigned NOT NULL DEFAULT 0,
+    PRIMARY KEY (`DisplayId`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+
 def write_sql(path, pack, rows, new_cdi, new_cmd):
-    """mod-transmog-plus world rows: the looks, and one creature per look for the addon's preview
-    (3.3.5 model frames can show a creature entry, not a display id)."""
+    """The pack's world SQL, which its repo ships as a server module: the looks for
+    mod-transmog-plus, one creature per look for the addon's preview (3.3.5 model frames can show
+    a creature entry, not a display id), and the patch's new DBC rows for the server's stores."""
     previews = [(preview, d, name) for d, _form, name, _tier, preview in rows]
     first, last = pack["preview_base"], pack["preview_base"] + 499
     if any(not first <= entry <= last for entry, _d, _n in previews):
@@ -407,16 +431,23 @@ def write_sql(path, pack, rows, new_cdi, new_cmd):
         sys.exit("two looks share a preview creature entry")
     kinds = ", ".join(sql_str(k) for k in pack["template"])
     with open(path, "w", encoding="utf-8") as f:
-        f.write("-- Generated by buildthehomelab/wow-mod-retail-druid-forms tools/build_patch.py from\n")
+        f.write("-- Generated by buildthehomelab/wow-mod-retail-creatures tools/build_patch.py from\n")
         f.write("-- %s\n" % pack["source"])
+        f.write("-- The looks show in mod-transmog-plus's Transmogrify window. That module owns the table; it is\n"
+                "-- made here too so this file applies whichever of the two comes first.\n")
+        f.write(FORMS_TABLE)
         f.write("DELETE FROM `mod_transmog_plus_forms` WHERE `Form` IN (%s);\n" % kinds)
         f.write("INSERT INTO `mod_transmog_plus_forms` (`DisplayId`, `Form`, `Name`, `UnlockPhase`, `PreviewCreature`, `SortOrder`) VALUES\n")
         f.write(",\n".join("(%d, %s, %s, %d, %d, %d)" % (d, sql_str(form), sql_str(name), tier, preview,
                                                        pack["sort_base"] + i + 1)
                            for i, (d, form, name, tier, preview) in enumerate(rows)) + ";\n\n")
-        f.write("-- Preview creatures %d-%d: never spawned.\n" % (first, last))
-        f.write("DELETE FROM `creature_template_model` WHERE `CreatureID` BETWEEN %d AND %d;\n" % (first, last))
-        f.write("DELETE FROM `creature_template` WHERE `entry` BETWEEN %d AND %d;\n" % (first, last))
+        # Only this pack's own creatures go: another module may have taken an entry in the block
+        # (mod-lost-legendaries' Shade of Highlord Mograine is 9501300, inside the druid forms').
+        mine = "BETWEEN %d AND %d AND t.`subname` = %s" % (first, last, sql_str(pack["subname"]))
+        f.write("-- Preview creatures, in %d-%d with subname %s: never spawned.\n" % (first, last, sql_str(pack["subname"])))
+        f.write("DELETE m FROM `creature_template_model` m JOIN `creature_template` t ON t.`entry` = m.`CreatureID`\n"
+                "WHERE t.`entry` %s;\n" % mine)
+        f.write("DELETE t FROM `creature_template` t WHERE t.`entry` %s;\n" % mine)
         f.write("INSERT INTO `creature_template` (`entry`, `name`, `subname`, `minlevel`, `maxlevel`, `faction`, `type`, `unit_class`) VALUES\n")
         f.write(",\n".join("(%d, %s, %s, 1, 1, 35, 1, 1)" % (e, sql_str(n), sql_str(pack["subname"]))
                            for e, _d, n in previews) + ";\n")
