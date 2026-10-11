@@ -39,7 +39,10 @@ Nothing from Blizzard is stored here or in the packs; the files come from
     without a key black. A totem whose first animation isn't Stand stood as a black shape, and
     a glow went out whenever a form left its first animation.
 - `tools/check_m2.py` checks a converted model the way the client reads it. The build fails on
-  a model it rejects.
+  a model it rejects. That includes triangles the client's mouse hit test would read outside
+  its buffer (a submesh's triangle pointing at another submesh's vertices, or a collision
+  triangle past the collision vertices): such a model draws fine and crashes the client, now
+  and then, when the mouse moves over it.
 - `tools/fetch.py` downloads and caches model files and tables from wago.tools.
 - `tools/build_patch.py` builds a pack: it downloads everything, converts each model once per
   geoset combination, and writes the patch. Each look becomes a CreatureDisplayInfo row on a
