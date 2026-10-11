@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Sanity-check a 3.3.5a (MD20 v264) model + skin the way the client reads them: every array
 inside the file, every animated track with one sub-array per sequence, keyframes sorted and
-inside their sequence, skin indexes in range, a bounding box that fits the mesh.
+inside their sequence, skin indexes in range, a bounding box that fits the mesh, and triangles
+the mouse hit test can read (each submesh's inside its own vertices, the collision mesh's inside
+the collision vertices).
 
     python3 check_m2.py model.m2 model00.skin
 """
@@ -131,6 +133,17 @@ def check(m2, skin):
             errors.append("vertex %d: bone index out of range" % i)
             break
 
+    # The client's mouse hit test of a model that is tested by its collision mesh (Wow.exe
+    # 0x81DD50, build 12340) copies the collision vertices into a buffer of that many entries and
+    # reads the triangles from it without a check.
+    ncv = h["collision_positions"][0]
+    ctris = struct.unpack_from("<%dH" % h["collision_indices"][0], m2, h["collision_indices"][1])
+    if len(ctris) % 3:
+        errors.append("collision mesh: %d indices is not a whole number of triangles" % len(ctris))
+    if any(x >= ncv for x in ctris):
+        errors.append("collision mesh: a triangle points past its %d vertices (the mouse hit test reads "
+                      "outside its buffer: client crash at 0x0081D559)" % ncv)
+
     # skin
     assert skin[:4] == b"SKIN"
     a = [struct.unpack_from("<II", skin, 4 + 8 * i) for i in range(5)]
@@ -156,6 +169,20 @@ def check(m2, skin):
             errors.append("submesh %d: %d bones in its palette (3.3.5 GPU skinning crashes past ~75)" % (i, s[6]))
         if s[1] or s[2] + s[3] > len(vmap) or s[4] + s[5] > len(idx) or s[7] + s[6] > len(bl):
             errors.append("submesh %d out of range %s" % (i, s[:8]))
+            continue
+        # For any other model the hit test (0x81DAF0) animates one submesh's vertices into a
+        # buffer of vertexCount entries and reads buffer[index - vertexStart] for each of that
+        # submesh's triangles. Drawing never shows a triangle that points at another submesh's
+        # vertices (the graphics card has them all); the hit test reads outside its buffer.
+        used = idx[s[4]:s[4] + s[5]]
+        if s[5] % 3:
+            errors.append("submesh %d: %d indices is not a whole number of triangles" % (i, s[5]))
+        out = [k for k, v in enumerate(used) if not s[2] <= v < s[2] + s[3]]
+        if out:
+            k = out[0] // 3 * 3
+            errors.append("submesh %d: triangle %s points outside its vertices %d-%d, %d indices in all (the "
+                          "mouse hit test reads outside its buffer: client crash at 0x0081D559)"
+                          % (i, list(used[k:k + 3]), s[2], s[2] + s[3] - 1, len(out)))
     for i in range(a[4][0]):
         bt = struct.unpack_from("<BbHHHhHHHHHHH", skin, a[4][1] + 24 * i)
         if bt[3] >= len(subs):
