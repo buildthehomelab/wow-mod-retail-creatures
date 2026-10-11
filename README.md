@@ -12,6 +12,7 @@ repo: a list of looks, a small `pack.json`, and what the build writes from them.
 | --- | --- | --- |
 | [wow-mod-retail-druid-forms](https://github.com/buildthehomelab/wow-mod-retail-druid-forms) | 265 druid form looks | patch-R |
 | [wow-mod-retail-shaman-totems](https://github.com/buildthehomelab/wow-mod-retail-shaman-totems) | 80 shaman totem looks | patch-V |
+| [wow-mod-retail-warlock-pets](https://github.com/buildthehomelab/wow-mod-retail-warlock-pets) | warlock demon looks | patch-Y |
 
 Nothing from Blizzard is stored here or in the packs; the files come from
 [wago.tools](https://wago.tools) at build time.
@@ -103,6 +104,15 @@ A pack repo holds:
   progression phase that unlocks it, 0 = from the start), `model` (names the model's folder and
   file), `name`, and optionally `textures` (three file ids overriding the retail display's),
   `folder` and `preview`.
+- A look can also be a display the client has, at another size or in other colours: leave
+  `retail_display` empty and give `client_display` (the client's display id), with
+  `display_scale` and/or `textures` (three retail file ids, 0 for none). The look's `display` is
+  then a new row copied from the client's, on the client's own model: no model is converted and
+  the client's own effects stay. The textures are stored next to that model. Use it where the
+  client only has a model at the wrong size (a boss's), since the server swaps a display and not
+  a scale, and where an HD client's model is retail's own, so retail's other colours fit it. A
+  model row past the stock 3.3.5a table (an HD pack's) is given to the server with the look.
+- `display_scale` on a converted look sets its display's scale in place of retail's.
 - A script that writes the data file from retail's tables (`fetch.py` has the downloads), if the
   list isn't kept by hand.
 - For the server: the generated SQL under `data/sql/db-world/`, and `src/<module>_loader.cpp`
