@@ -18,6 +18,10 @@ converted by m2creature.py (one copy per geoset combination a look needs) and st
 pack's folder. Each look gets a CreatureDisplayInfo row (id from the data file) on a
 CreatureModelData row cloned from the stock model it replaces, so sounds and footprints stay the
 same. --sql writes the mod-transmog-plus rows (mod_transmog_plus_forms + preview creatures).
+
+A look can also be a display the client already has, at another size or with other textures
+(client_display, display_scale and textures in the data file): it gets a CreatureDisplayInfo row copied
+from the client's, on the client's own model, and no model is converted.
 """
 import argparse
 import collections
@@ -66,6 +70,10 @@ def load_pack(folder):
 
 MASK_WORDS = ("mask", "square_soft", "gradient")
 
+# The last CreatureModelData id of the stock 3.3.5a client, which is what the server has. A model
+# row past it that a look uses is an HD pack's, and has to be given to the server too.
+STOCK_MAX_MODEL = 3440
+
 
 # --- DBC ---------------------------------------------------------------------------------------
 
@@ -102,6 +110,12 @@ def row_of(rows, row_id):
         if r[0] == row_id:
             return list(r)
     sys.exit("row %d missing from the base DBC" % row_id)
+
+
+def texture_names_of(row, strings):
+    """A CreatureDisplayInfo row's three texture names."""
+    return [strings[row[6 + k]:strings.index(b"\0", row[6 + k])].decode("latin-1") if row[6 + k] else ""
+            for k in range(3)]
 
 
 # --- textures ----------------------------------------------------------------------------------
@@ -207,8 +221,13 @@ def main():
     cdi_rows, cdi_str, cdi_fields = read_dbc(os.path.join(args.dbc, "CreatureDisplayInfo.dbc"))
     cmd_rows, cmd_str, cmd_fields = read_dbc(os.path.join(args.dbc, "CreatureModelData.dbc"))
     taken = {r[0] for r in cdi_rows}
-    # A look without a retail display is one the client already has: no model, only the SQL.
-    clash = [l["display"] for l in looks if l["retail_display"] and int(l["display"]) in taken]
+    # A look without a retail display is one the client already has: no model, only the SQL
+    # (and, with a client_display, a row of its own: that display at another size).
+    for l in looks:
+        if l.get("client_display") and l["retail_display"]:
+            sys.exit("%s: a look has a retail_display or a client_display, not both" % l["display"])
+    clash = [l["display"] for l in looks
+             if (l["retail_display"] or l.get("client_display")) and int(l["display"]) in taken]
     if clash:
         sys.exit("display ids already in the base CreatureDisplayInfo.dbc: %s" % ", ".join(clash[:10]))
     base_models = {r[0] for r in cmd_rows}
@@ -241,10 +260,35 @@ def main():
     warnings = []
     sql_rows = []
     new_cmd, new_cdi = [], []  # rows added to the client DBCs, mirrored into the server's *_dbc tables
+    client_cmd = {}  # the client's own model rows the server lacks, by id: mirrored too
     for l in looks:
         display = int(l["display"])
         preview = int(l["preview"]) if l.get("preview") else pack["preview_base"] + display - pack["first_display"]
         sql_rows.append((display, l["form"], l["name"], int(l["tier"]), preview))
+        if l.get("client_display"):
+            # The client's own display at another size: a copy of its row on the same model.
+            row = row_of(cdi_rows, int(l["client_display"]))
+            row[0] = display
+            if l.get("display_scale"):
+                row[4] = f32(l["display_scale"])
+            model_row = row_of(cmd_rows, row[1])
+            model_path = cmd_str[model_row[2]:cmd_str.index(b"\0", model_row[2])].decode("latin-1")
+            # Other textures (retail file ids, 0 for none) go next to the client's model.
+            override = [int(x) for x in l.get("textures", "").split(",") if x]
+            if override:
+                if len(override) != 3:
+                    sys.exit("%d %s: textures takes three file ids (0 for none)" % (display, l["name"]))
+                for k, fd in enumerate(override):
+                    if fd:
+                        files["%s\\T%d.blp" % (model_path.rsplit("\\", 1)[0], fd)] = ("tex", fd)
+                        row[6 + k] = add_string(cdi_str, "T%d" % fd)
+                    else:
+                        row[6 + k] = 0
+            if row[1] > STOCK_MAX_MODEL:
+                client_cmd[row[1]] = (model_row, model_path)
+            cdi_rows.append(row)
+            new_cdi.append((row, texture_names_of(row, cdi_str)))
+            continue
         if not l["retail_display"]:
             continue
         rd = cdi_r[l["retail_display"]]
@@ -327,7 +371,7 @@ def main():
         row[0] = display
         row[1] = model_id
         row[3] = 0
-        row[4] = f32(rd["CreatureModelScale"] or 1)
+        row[4] = f32(l.get("display_scale") or rd["CreatureModelScale"] or 1)
         row[5] = int(rd["CreatureModelAlpha"]) or 255
         override = [int(x) for x in l.get("textures", "").split(",") if x]
         for k in range(3):
@@ -348,8 +392,7 @@ def main():
         row[14] = 0
         row[15] = 0
         cdi_rows.append(row)
-        new_cdi.append((row, [cdi_str[row[6 + k]:cdi_str.index(b"\0", row[6 + k])].decode() if row[6 + k] else ""
-                              for k in range(3)]))
+        new_cdi.append((row, texture_names_of(row, cdi_str)))
 
     # Textures (top mips dropped above --max-texture).
     tex_dir = os.path.join(args.work, "textures")
@@ -388,7 +431,7 @@ def main():
     for w in warnings:
         print("warning:", w)
     if args.sql:
-        write_sql(args.sql, pack, sql_rows, new_cdi, new_cmd)
+        write_sql(args.sql, pack, sql_rows, new_cdi, new_cmd, [client_cmd[k] for k in sorted(client_cmd)])
 
 
 def sql_str(s):
@@ -419,7 +462,7 @@ FORMS_TABLE = """CREATE TABLE IF NOT EXISTS `mod_transmog_plus_forms` (
 """
 
 
-def write_sql(path, pack, rows, new_cdi, new_cmd):
+def write_sql(path, pack, rows, new_cdi, new_cmd, client_cmd=()):
     """The pack's world SQL, which its repo ships as a server module: the looks for
     mod-transmog-plus, one creature per look for the addon's preview (3.3.5 model frames can show
     a creature entry, not a display id), and the patch's new DBC rows for the server's stores."""
@@ -465,12 +508,21 @@ def write_sql(path, pack, rows, new_cdi, new_cmd):
         f.write(",\n".join("(%d, %d, %d, %d, %s, %d, %s, %s, %s, '', %d, %d, %d, %d, %d, %d)" % (
             r[0], si(r[1]), si(r[2]), si(r[3]), fl(r[4]), si(r[5]), sql_str(t[0]), sql_str(t[1]), sql_str(t[2]),
             si(r[10]), si(r[11]), si(r[12]), si(r[13]), si(r[14]), si(r[15])) for r, t in new_cdi) + ";\n")
+        # The models: the patch's own block, and any of the client's own rows past the stock table
+        # (an HD pack's) that a look sits on, which the server has to know as well.
+        cmd_insert = "INSERT INTO `creaturemodeldata_dbc` (`ID`, `Flags`, `ModelName`, `SizeClass`, `ModelScale`, `BloodID`, `FootprintTextureID`, `FootprintTextureLength`, `FootprintTextureWidth`, `FootprintParticleScale`, `FoleyMaterialID`, `FootstepShakeSize`, `DeathThudShakeSize`, `SoundID`, `CollisionWidth`, `CollisionHeight`, `MountHeight`, `GeoBoxMinX`, `GeoBoxMinY`, `GeoBoxMinZ`, `GeoBoxMaxX`, `GeoBoxMaxY`, `GeoBoxMaxZ`, `WorldEffectScale`, `AttachedEffectScale`, `MissileCollisionRadius`, `MissileCollisionPush`, `MissileCollisionRaise`) VALUES\n"
+        def cmd_values(pairs):
+            return ",\n".join("(%d, %d, %s, %d, %s, %d, %d, %s, %s, %s, %d, %d, %d, %d, %s)" % (
+                r[0], si(r[1]), sql_str(n), si(r[3]), fl(r[4]), si(r[5]), si(r[6]), fl(r[7]), fl(r[8]), fl(r[9]),
+                si(r[10]), si(r[11]), si(r[12]), si(r[13]), ", ".join(fl(x) for x in r[14:28])) for r, n in pairs) + ";\n"
         mids = [r[0] for r, _n in new_cmd]
-        f.write("DELETE FROM `creaturemodeldata_dbc` WHERE `ID` BETWEEN %d AND %d;\n" % (min(mids), max(mids)))
-        f.write("INSERT INTO `creaturemodeldata_dbc` (`ID`, `Flags`, `ModelName`, `SizeClass`, `ModelScale`, `BloodID`, `FootprintTextureID`, `FootprintTextureLength`, `FootprintTextureWidth`, `FootprintParticleScale`, `FoleyMaterialID`, `FootstepShakeSize`, `DeathThudShakeSize`, `SoundID`, `CollisionWidth`, `CollisionHeight`, `MountHeight`, `GeoBoxMinX`, `GeoBoxMinY`, `GeoBoxMinZ`, `GeoBoxMaxX`, `GeoBoxMaxY`, `GeoBoxMaxZ`, `WorldEffectScale`, `AttachedEffectScale`, `MissileCollisionRadius`, `MissileCollisionPush`, `MissileCollisionRaise`) VALUES\n")
-        f.write(",\n".join("(%d, %d, %s, %d, %s, %d, %d, %s, %s, %s, %d, %d, %d, %d, %s)" % (
-            r[0], si(r[1]), sql_str(n), si(r[3]), fl(r[4]), si(r[5]), si(r[6]), fl(r[7]), fl(r[8]), fl(r[9]),
-            si(r[10]), si(r[11]), si(r[12]), si(r[13]), ", ".join(fl(x) for x in r[14:28])) for r, n in new_cmd) + ";\n")
+        if mids:
+            f.write("DELETE FROM `creaturemodeldata_dbc` WHERE `ID` BETWEEN %d AND %d;\n" % (min(mids), max(mids)))
+            f.write(cmd_insert + cmd_values(new_cmd))
+        if client_cmd:
+            f.write("-- The client's own model rows these looks use that the stock tables lack.\n")
+            f.write("DELETE FROM `creaturemodeldata_dbc` WHERE `ID` IN (%s);\n" % ", ".join(str(r[0]) for r, _n in client_cmd))
+            f.write(cmd_insert + cmd_values(client_cmd))
         f.write("DELETE FROM `creature_model_info` WHERE `DisplayID` BETWEEN %d AND %d;\n" % (min(ids), max(ids)))
         f.write("INSERT INTO `creature_model_info` (`DisplayID`, `BoundingRadius`, `CombatReach`, `Gender`, `DisplayID_Other_Gender`) VALUES\n")
         f.write(",\n".join("(%d, 1, 1.5, 2, 0)" % d for d in ids) + ";\n")
