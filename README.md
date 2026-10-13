@@ -44,6 +44,17 @@ Nothing from Blizzard is stored here or in the packs; the files come from
   triangle past the collision vertices): such a model draws fine and crashes the client, now
   and then, when the mouse moves over it.
 - `tools/fetch.py` downloads and caches model files and tables from wago.tools.
+- `tools/tact.py` reads the model files straight from Blizzard's CDN instead: set
+  `RETAIL_SOURCE=cdn`. Its first use downloads 400 MB of indexes for the live retail build and
+  takes a couple of minutes; after that a file is one request, wago.tools can be down, and every
+  file comes from the same build, which stays pinned until `tact.py --refresh`. Tables still
+  come from wago.tools (cached after the first download).
+- `tools/census.py` lists every retail mount and battle pet against a client: which it already
+  has, which need only textures, which need a converted model, and what the converter makes of
+  each of those (it converts them all, animations and textures included, without building a
+  patch). `tools/client_files.py` writes what it needs to know about the client: the list of
+  its `Creature\` files, and the three creature DBCs the client ends up using, which are also
+  the ones `build_patch.py --dbc` wants.
 - `tools/build_patch.py` builds a pack: it downloads everything, converts each model once per
   geoset combination, and writes the patch. Each look becomes a CreatureDisplayInfo row on a
   CreatureModelData row cloned from the stock model it replaces, so sounds and footprints stay
@@ -147,14 +158,18 @@ module uses.
 - **White armour on other creatures after adding a pack's patch**: an HD creature pack's DBCs
   were replaced. Use the `--dbc-only` patch.
 - **wago.tools answers 502/504**: the fetcher retries; rerun if it still gives up. Downloads are
-  cached in `--cache`.
+  cached in `--cache`. If it stays down, build with `RETAIL_SOURCE=cdn`.
+- **A model's skin or animations don't fit it** (an index out of range in the converter, or many
+  animations dropped as stale): wago.tools doesn't serve every file from the same build. Build
+  with `RETAIL_SOURCE=cdn`.
 
 ## Credits
 
 - Model and table data: Blizzard Entertainment, downloaded at build time from
-  [wago.tools](https://wago.tools); file names from the
+  [wago.tools](https://wago.tools) or Blizzard's CDN; file names from the
   [wowdev community listfile](https://github.com/wowdev/wow-listfile).
-- M2 format notes: [wowdev.wiki](https://wowdev.wiki/M2) and
+- Keys of encrypted files: [wowdev/TACTKeys](https://github.com/wowdev/TACTKeys).
+- M2 and TACT format notes: [wowdev.wiki](https://wowdev.wiki/M2) and
   [whoa](https://github.com/thunderbrewhq/whoa).
 
 ## License
