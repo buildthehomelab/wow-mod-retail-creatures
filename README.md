@@ -55,6 +55,13 @@ Nothing from Blizzard is stored here or in the packs; the files come from
   patch). `tools/client_files.py` writes what it needs to know about the client: the list of
   its `Creature\` files, and the three creature DBCs the client ends up using, which are also
   the ones `build_patch.py --dbc` wants.
+- `tools/contact_sheet.py` turns a census into a review page: every look that needs a converted
+  model, drawn from the converted 3.3.5a model (posed on the first frame of Stand, with the
+  look's textures, by a small software renderer) next to Blizzard's own render of the retail
+  look. Mounts are grouped by family (`tools/mount_families.py` gets the families from
+  warcraftmounts.com), pets by pet type. Click a look to flag it and copy the flagged list out.
+  It shows what the converter kept, one frame of it; particles, the other animations and the
+  rider's seat still need a client.
 - `tools/build_patch.py` builds a pack: it downloads everything, converts each model once per
   geoset combination, and writes the patch. Each look becomes a CreatureDisplayInfo row on a
   CreatureModelData row cloned from the stock model it replaces, so sounds and footprints stay
@@ -138,7 +145,7 @@ module uses.
 
 ## Requirements
 
-- Python 3.10+ (standard library only).
+- Python 3.10+ (standard library only; `contact_sheet.py` also needs numpy and Pillow).
 - [StormLib](https://github.com/ladislav-zezula/StormLib) as a shared library. The default is
   `/usr/local/lib/libstorm.dylib`; point `STORMLIB` at yours.
 
@@ -169,6 +176,8 @@ module uses.
   [wago.tools](https://wago.tools) or Blizzard's CDN; file names from the
   [wowdev community listfile](https://github.com/wowdev/wow-listfile).
 - Keys of encrypted files: [wowdev/TACTKeys](https://github.com/wowdev/TACTKeys).
+- Reference pictures on the review page: Blizzard's render server and
+  [Warcraft Mounts](https://www.warcraftmounts.com), linked from the page, not stored.
 - M2 and TACT format notes: [wowdev.wiki](https://wowdev.wiki/M2) and
   [whoa](https://github.com/thunderbrewhq/whoa).
 
