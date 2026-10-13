@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retail mounts and pets: conversion review</title>
+<style>
+:root {
+  --bg: #f4f3f0; --panel: #ffffff; --ink: #1d2126; --muted: #6a717b; --line: #dcdad4;
+  --accent: #1f6f8b; --flag: #c8372d; --flag-bg: #fbe9e7; --warn: #8a5a00; --warn-bg: #fbf0d4; --chip: #ebe9e4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17191d; --panel: #20242a; --ink: #e7e9ec; --muted: #969eaa; --line: #333941;
+    --accent: #6fc3de; --flag: #ff7a6e; --flag-bg: #3a2220; --warn: #f0c36a; --warn-bg: #3a3120; --chip: #2b3038;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 16px; }
+h1 { margin: 0 0 2px; font-size: 17px; font-weight: 650; }
+.sub { color: var(--muted); font-size: 12.5px; margin-bottom: 8px; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button, select, input[type=search], input[type=text] {
+  font: inherit; color: var(--ink); background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px;
+}
+button { cursor: pointer; }
+button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+button.flagged-count { border-color: var(--flag); color: var(--flag); background: var(--flag-bg); font-weight: 600; }
+input[type=search] { min-width: 200px; flex: 1 1 200px; max-width: 320px; }
+select { max-width: 260px; }
+main { padding: 4px 16px 60px; }
+section { content-visibility: auto; contain-intrinsic-size: auto 600px; }
+h2 { font-size: 15px; margin: 22px 0 8px; display: flex; gap: 8px; align-items: baseline; }
+h2 small { color: var(--muted); font-weight: 400; font-size: 12.5px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
+.tile { background: var(--panel); border: 2px solid var(--line); border-radius: 8px; padding: 8px; }
+.tile.flag { border-color: var(--flag); background: var(--flag-bg); }
+.pics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.pic { position: relative; aspect-ratio: 1; border-radius: 5px; overflow: hidden; background: #3a3e46; border: 0; padding: 0; display: block; width: 100%; }
+.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pic.ref img { object-fit: cover; background: #101216; }
+.pic span { position: absolute; left: 0; bottom: 0; font-size: 10.5px; padding: 1px 6px; background: rgba(0, 0, 0, .58); color: #fff; border-top-right-radius: 5px; }
+.none { display: flex; align-items: center; justify-content: center; text-align: center; color: #b9bec7; font-size: 12px; padding: 10px; height: 100%; }
+.name { font-weight: 600; margin-top: 7px; overflow-wrap: anywhere; }
+.meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip); color: var(--muted); }
+.tag.warn { background: var(--warn-bg); color: var(--warn); }
+.tag.bad { background: var(--flag-bg); color: var(--flag); }
+.tile input[type=text] { width: 100%; margin-top: 6px; display: none; background: var(--panel); }
+.tile.flag input[type=text] { display: block; }
+dialog { width: min(720px, 92vw); border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); padding: 16px; }
+dialog::backdrop { background: rgba(0, 0, 0, .5); }
+textarea { width: 100%; height: 300px; font: 12px/1.4 ui-monospace, Menlo, monospace; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.hide { display: none !important; }
+#empty { color: var(--muted); padding: 30px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Retail mounts and pets: conversion review</h1>
+  <div class="sub" id="summary"></div>
+  <div class="bar">
+    <button data-f="all" aria-pressed="true">All</button>
+    <button data-f="mount" aria-pressed="false">Mounts</button>
+    <button data-f="pet" aria-pressed="false">Pets</button>
+    <button data-f="fx" aria-pressed="false">Lost many effects</button>
+    <button data-f="warn" aria-pressed="false">Has a warning</button>
+    <button data-f="refused" aria-pressed="false">Not converted</button>
+    <button data-f="flag" aria-pressed="false">Flagged</button>
+    <select id="jump" aria-label="Jump to a group"><option value="">Jump to a group…</option></select>
+    <input type="search" id="q" placeholder="Search name or model" aria-label="Search name or model">
+    <button class="flagged-count" id="open">Flagged: 0</button>
+  </div>
+</header>
+<main id="main"><div id="empty" class="hide">Nothing matches.</div></main>
+<dialog id="dlg">
+  <h2 style="margin-top:0">Flagged looks</h2>
+  <p class="meta">One line per look: retail display, model, name, your note. Copy this back into the chat.</p>
+  <textarea id="out" readonly></textarea>
+  <div class="bar" style="margin-top:10px">
+    <button id="copy">Copy</button>
+    <a id="save" download="flagged.tsv"><button type="button">Save as file</button></a>
+    <button id="clear">Clear all flags</button>
+    <button id="close" style="margin-left:auto">Close</button>
+  </div>
+</dialog>
+<script>
+const DATA = /*DATA*/[];
+const SITE = "{{SITE}}";
+const RENDER = "{{RENDER}}";
+const KEY = "retail-review-flags";
+let flags = {};
+try { flags = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { flags = {}; }
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(flags)); } catch (e) {} };
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+const main = document.getElementById("main");
+const groups = new Map();
+for (const t of DATA) {
+  if (!groups.has(t.group)) groups.set(t.group, []);
+  groups.get(t.group).push(t);
+}
+const jump = document.getElementById("jump");
+const tiles = [];
+for (const [name, list] of groups) {
+  const sec = el("section");
+  sec.id = "g-" + name.replace(/[^a-z0-9]+/gi, "-");
+  const h = el("h2", null, name);
+  const count = el("small");
+  h.append(count);
+  const grid = el("div", "grid");
+  sec.append(h, grid);
+  main.append(sec);
+  const opt = el("option", null, name + " (" + list.length + ")");
+  opt.value = sec.id;
+  jump.append(opt);
+  for (const t of list) {
+    const tile = el("div", "tile");
+    const pics = el("div", "pics");
+    const ours = el("button", "pic");
+    ours.title = "Click to flag this look";
+    if (t.drawn) {
+      const img = el("img");
+      img.loading = "lazy"; img.alt = "Converted " + t.names[0]; img.src = "img/" + t.d + ".jpg";
+      ours.append(img, el("span", null, "converted"));
+    } else {
+      ours.append(el("div", "none", t.result === "ok" ? (t.note || "not drawn") : t.result));
+    }
+    let ref;
+    if (t.blz || t.ref) {
+      // Blizzard's render of this exact look; failing that, the mount's picture on Warcraft Mounts.
+      const src = t.blz ? RENDER.replace("%s", t.d) : SITE + "/images/thumbs/" + encodeURIComponent(t.ref);
+      ref = el("a", "pic ref");
+      ref.href = t.page ? SITE + "/mount.php?mountid=" + t.page : src; ref.target = "_blank"; ref.rel = "noopener";
+      ref.title = t.page ? "Open on Warcraft Mounts" : "Open the full picture";
+      const img = el("img");
+      img.loading = "lazy"; img.alt = "Retail " + t.names[0]; img.referrerPolicy = "no-referrer"; img.src = src;
+      ref.append(img, el("span", null, t.blz ? "retail" : "retail (may be another colour)"));
+    } else {
+      ref = el("div", "pic ref");
+      ref.append(el("div", "none", "no reference picture"));
+    }
+    pics.append(ours, ref);
+    const more = t.names.length > 1 ? " +" + (t.names.length - 1) : "";
+    const name = el("div", "name", t.names[0] + more);
+    if (more) name.title = t.names.join("\n");
+    const meta = el("div", "meta", t.model + " · display " + t.d);
+    const tags = el("div", "tags");
+    const tag = (text, cls) => tags.append(el("span", "tag" + (cls ? " " + cls : ""), text));
+    if (t.result !== "ok") tag(t.result, "bad");
+    if (t.fx) tag(t.fx + " particle effect" + (t.fx > 1 ? "s" : "") + " dropped", t.fx >= 15 ? "warn" : "");
+    if (t.ribbons) tag(t.ribbons + " ribbon" + (t.ribbons > 1 ? "s" : "") + " dropped");
+    if (t.tex4) tag("4th texture dropped", "warn");
+    if (t.nomove.length) tag("no " + t.nomove.map(a => ({0: "stand", 4: "walk", 5: "run"})[a]).join("/") + " animation", "warn");
+    if (t.geo) tag("geosets baked");
+    if (t.drawn && t.note) tag(t.note, "warn");
+    const note = el("input");
+    note.type = "text"; note.placeholder = "What's wrong? (optional)"; note.setAttribute("aria-label", "Note for " + t.names[0]);
+    tile.append(pics, name, meta, tags, note);
+    grid.append(tile);
+    const warn = t.tex4 || t.nomove.length > 0 || (t.drawn && !!t.note);
+    const rec = {t, tile, sec, note, text: (t.names.join(" ") + " " + t.model + " " + t.d).toLowerCase(), warn};
+    tiles.push(rec);
+    const paint = () => { tile.classList.toggle("flag", t.d in flags); note.value = flags[t.d] || ""; };
+    ours.addEventListener("click", () => { if (t.d in flags) delete flags[t.d]; else flags[t.d] = ""; save(); paint(); refresh(); if (t.d in flags) note.focus(); });
+    note.addEventListener("input", () => { flags[t.d] = note.value; save(); });
+    paint();
+  }
+}
+
+let filter = "all";
+const q = document.getElementById("q");
+function refresh() {
+  const term = q.value.trim().toLowerCase();
+  let shown = 0;
+  const per = new Map();
+  for (const r of tiles) {
+    const t = r.t;
+    const ok = (filter === "all" || (filter === "mount" && t.kinds.includes("mount")) || (filter === "pet" && t.kinds.includes("pet"))
+      || (filter === "fx" && t.fx >= 15) || (filter === "warn" && r.warn) || (filter === "refused" && !t.drawn)
+      || (filter === "flag" && t.d in flags)) && (!term || r.text.includes(term));
+    r.tile.classList.toggle("hide", !ok);
+    if (ok) { shown++; per.set(r.sec, (per.get(r.sec) || 0) + 1); }
+  }
+  for (const sec of main.querySelectorAll("section")) {
+    const n = per.get(sec) || 0;
+    sec.classList.toggle("hide", !n);
+    sec.querySelector("small").textContent = n + (n === 1 ? " look" : " looks");
+  }
+  document.getElementById("empty").classList.toggle("hide", shown > 0);
+  const nf = Object.keys(flags).length;
+  document.getElementById("open").textContent = "Flagged: " + nf;
+  document.getElementById("summary").textContent = shown + " of " + DATA.length + " looks shown. Left picture: the converted 3.3.5 model. " +
+    "Right: Blizzard's render of the same retail look. Click a left picture to flag it.";
+}
+for (const b of document.querySelectorAll("button[data-f]")) {
+  b.addEventListener("click", () => {
+    filter = b.dataset.f;
+    for (const o of document.querySelectorAll("button[data-f]")) o.setAttribute("aria-pressed", o === b);
+    refresh();
+  });
+}
+q.addEventListener("input", refresh);
+jump.addEventListener("change", () => { const s = document.getElementById(jump.value); if (s) s.scrollIntoView(); jump.value = ""; });
+
+const dlg = document.getElementById("dlg"), out = document.getElementById("out");
+document.getElementById("open").addEventListener("click", () => {
+  const by = new Map(DATA.map(t => [t.d, t]));
+  const lines = Object.keys(flags).filter(d => by.has(d)).map(d => [d, by.get(d).model, by.get(d).names[0], flags[d]].join("\t"));
+  out.value = lines.join("\n");
+  document.getElementById("save").href = "data:text/tab-separated-values;charset=utf-8," + encodeURIComponent(out.value + "\n");
+  dlg.showModal();
+});
+document.getElementById("close").addEventListener("click", () => dlg.close());
+document.getElementById("copy").addEventListener("click", () => {
+  out.select();
+  (navigator.clipboard ? navigator.clipboard.writeText(out.value) : Promise.reject()).catch(() => document.execCommand("copy"));
+});
+document.getElementById("clear").addEventListener("click", () => {
+  if (!confirm("Remove every flag and note?")) return;
+  flags = {}; save();
+  for (const r of tiles) { r.tile.classList.remove("flag"); r.note.value = ""; }
+  dlg.close(); refresh();
+});
+refresh();
+</script>
+</body>
+</html>
