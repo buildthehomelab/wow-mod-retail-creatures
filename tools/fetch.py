@@ -1,7 +1,16 @@
-"""Downloads from wago.tools, cached on disk. wago answers 502/504 under load, so retry."""
+"""Downloads of retail files and tables, cached on disk.
+
+Tables (DB2 as CSV) come from wago.tools. Files come from wago.tools too, or with
+RETAIL_SOURCE=cdn straight from Blizzard's CDN (tact.py): that needs 400 MB of indexes on its
+first use, then is much faster, works when wago.tools is down, and takes every file from one
+pinned retail build. wago.tools pins nothing: of 60 files compared on 2026-10-12, 16 were not
+the live retail build's copy, and six models came with a skin made for another version of
+them. The two sources keep separate caches (<cache>/casc and <cache>/cdn), so they never mix.
+"""
 import csv
 import io
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -10,6 +19,8 @@ CASC = "https://wago.tools/api/casc/{}"
 DB2 = "https://wago.tools/db2/{}/csv"
 LISTFILE = "https://github.com/wowdev/wow-listfile/releases/latest/download/community-listfile.csv"
 UA = {"User-Agent": "mod-retail-druid-forms/1.0"}
+SOURCE = os.environ.get("RETAIL_SOURCE", "wago")  # wago or cdn
+_tact, _tact_lock = {}, threading.Lock()
 
 
 def fetch(url, path, tries=6):
@@ -33,13 +44,35 @@ def fetch(url, path, tries=6):
             time.sleep(2 + 3 * attempt)
 
 
+def tact(cache):
+    """The pinned CDN build of this cache (indexed on first use)."""
+    with _tact_lock:
+        if cache not in _tact:
+            from tact import Tact
+            _tact[cache] = Tact(cache)
+        return _tact[cache]
+
+
 def casc(cache, fdid):
-    return fetch(CASC.format(fdid), os.path.join(cache, "casc", str(fdid)))
+    """A retail file's bytes. From the CDN: KeyError if the build lacks it, tact.Encrypted if
+    it is unreleased content."""
+    if SOURCE != "cdn":
+        return fetch(CASC.format(fdid), os.path.join(cache, "casc", str(fdid)))
+    path = os.path.join(cache, "cdn", str(fdid))
+    if os.path.exists(path):
+        return open(path, "rb").read()
+    data = tact(cache).read(fdid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.part" % (path, threading.get_ident())
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+    return data
 
 
 def casc_path(cache, fdid):
     casc(cache, fdid)
-    return os.path.join(cache, "casc", str(fdid))
+    return os.path.join(cache, "cdn" if SOURCE == "cdn" else "casc", str(fdid))
 
 
 def db2(cache, table):
