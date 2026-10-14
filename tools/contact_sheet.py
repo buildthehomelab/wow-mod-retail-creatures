@@ -243,33 +243,55 @@ class Model:
 
 # --- drawing -----------------------------------------------------------------------------------
 
-def draw(model, textures, size=256, scale=2, azimuth=40.0, elevation=12.0):
-    """textures: {texture index: (RGBA array, wrap flags)}. Returns (size, size, 3) uint8."""
-    px = size * scale
+LIGHT = np.array([0.35, 0.45, 0.82]) / np.linalg.norm([0.35, 0.45, 0.82])
+
+
+def camera(azimuth, elevation):
+    """(towards the camera, screen right, screen up) for a camera looking at the origin."""
     az, el = np.radians(azimuth), np.radians(elevation)
     cam = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
     right = np.cross(-cam, [0.0, 0.0, 1.0])
     right /= np.linalg.norm(right)
-    up = np.cross(right, -cam)
+    return cam, right, np.cross(right, -cam)
+
+
+def drawn_batches(model, textures):
     drawn = [b for b in model.batches if b[1] in textures and b[4] > 0.02 and len(b[0])]
     if not drawn:
         raise ValueError("nothing to draw")
-    used = np.unique(np.concatenate([b[0].reshape(-1) for b in drawn]))
-    sx, sy, depth = model.pos @ right, -(model.pos @ up), model.pos @ cam
+    return drawn, np.unique(np.concatenate([b[0].reshape(-1) for b in drawn]))
+
+
+def draw(model, textures, size=256, scale=2, azimuth=40.0, elevation=12.0):
+    """textures: {texture index: (RGBA array, wrap flags)}. Returns (size, size, 3) uint8."""
+    px = size * scale
+    cam, right, up = camera(azimuth, elevation)
+    _drawn, used = drawn_batches(model, textures)
+    sx, sy = model.pos @ right, -(model.pos @ up)
     lo = np.array([sx[used].min(), sy[used].min()])
     hi = np.array([sx[used].max(), sy[used].max()])
-    span = max((hi - lo).max(), 1e-6) * 1.08
-    mid = (lo + hi) / 2
+    background = np.array(BACKGROUND, np.float32)[None, None] / 255.0 * np.linspace(1.12, 0.82, px)[:, None, None]
+    image, _covered = draw_raw(model, textures, px, azimuth, elevation, (lo + hi) / 2,
+                               max((hi - lo).max(), 1e-6) * 1.08, LIGHT, background)
+    image = (image.clip(0, 1) * 255).astype(np.uint8)
+    return image.reshape(size, scale, size, scale, 3).mean((1, 3)).astype(np.uint8)
+
+
+def draw_raw(model, textures, px, azimuth, elevation, mid, span, light, background):
+    """Draws onto a copy of background ((px, px, 3) floats, 0-1) with the screen point mid (in
+    model units, right and down) at the centre and span model units across. light is in world
+    space. Returns (image, the pixels a solid batch covered)."""
+    cam, right, up = camera(azimuth, elevation)
+    drawn, _used = drawn_batches(model, textures)
+    sx, sy, depth = model.pos @ right, -(model.pos @ up), model.pos @ cam
     X = (sx - mid[0]) / span * px + px / 2
     Y = (sy - mid[1]) / span * px + px / 2
-    light = np.array([0.35, 0.45, 0.82])
-    light /= np.linalg.norm(light)
     nrm = model.normal / np.maximum(np.linalg.norm(model.normal, axis=1, keepdims=True), 1e-6)
     shade = 0.5 + 0.5 * np.clip(nrm @ light, 0, 1) + 0.12 * np.clip(nrm @ cam, 0, 1)
     U, V = model.uv[:, 0], model.uv[:, 1]
 
     image = np.empty((px, px, 3), np.float32)
-    image[:] = np.array(BACKGROUND, np.float32)[None, None] / 255.0 * np.linspace(1.12, 0.82, px)[:, None, None]
+    image[:] = background
     zbuf = np.full((px, px), -np.inf)
     gx = np.arange(px) + 0.5
 
@@ -329,79 +351,99 @@ def draw(model, textures, size=256, scale=2, azimuth=40.0, elevation=12.0):
     for batch in drawn:
         if batch[2] <= 1:
             triangles(batch, True)
+    covered = np.isfinite(zbuf)
     for batch in drawn:
         if batch[2] > 1:
             triangles(batch, False)
-    image = (image.clip(0, 1) * 255).astype(np.uint8)
-    return image.reshape(size, scale, size, scale, 3).mean((1, 3)).astype(np.uint8)
+    return image, covered
 
 
 # --- the census's looks ------------------------------------------------------------------------
+
+def convert_variant(cache, valid, fdid, geosets, stem):
+    """Converts one retail model with one geoset choice the way build_patch.py does. Returns the
+    posed 3.3.5a model and {texture index: (file id, flags)} for its fixed (non-look) textures."""
+    raw = casc(cache, fdid)
+    m = Retail(raw)
+    anims = {}
+    for a, s, f in m.afid:
+        if f and a in valid:
+            try:
+                anims[(a, s)] = casc(cache, f)
+            except Exception:
+                pass
+    conv = Converter(raw, casc(cache, m.sfid[0]), anims, valid, stem)
+    names = listfile(cache, m.txid)
+    conv.mask_textures = {i for i, fd in enumerate(m.txid)
+                          if any(w in os.path.basename(names.get(fd, "")) for w in MASK_WORDS)}
+    drawn = conv.batch_textures(dict(geosets))
+    textures = []
+    for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
+        fd = m.txid[i] if i < len(m.txid) else 0
+        if i not in drawn or (ttype not in (11, 12, 13) and not fd):
+            textures.append((None, tflags, None))
+        elif ttype in (11, 12, 13):
+            textures.append((ttype, tflags, None))
+        else:
+            textures.append((0, tflags, "T%d.blp" % fd))
+    m2, skin = conv.convert(textures, dict(geosets))
+    model = Model(m2, skin)
+    fixed = {}
+    for i, (ttype, tflags, _n, _o) in enumerate(model.textures):
+        if ttype == 0 and textures[i][2] and textures[i][0] is not None:
+            fixed[i] = (int(textures[i][2][1:-4]), tflags)
+    return model, fixed
+
+
+def look_textures(model, fixed, tex, fallback, image):
+    """The textures draw() takes for one look (tex: its three skin file ids; image(file id) ->
+    RGBA or None), and notes on what it had to make up."""
+    use, note = {}, []
+    for i, (ttype, tflags, _n, _o) in enumerate(model.textures):
+        if i in fixed:
+            fd = fixed[i][0]
+        elif 11 <= ttype <= 13:
+            fd = tex[ttype - 11] or fallback.get(ttype - 11, 0)
+            if not tex[ttype - 11]:
+                note.append("slot %d %s" % (ttype - 11, "borrowed" if fd else "empty"))
+        else:
+            continue
+        img = image(fd) if fd else None
+        if img is None:
+            img = np.full((4, 4, 4), 255, np.uint8)  # the client draws a missing texture white
+            if fd:
+                note.append("texture %d unreadable" % fd)
+        use[i] = (img, tflags)
+    return use, note
+
+
+def blp_reader(cache, target=256):
+    """image(file id) -> RGBA array or None, each file read once."""
+    images = {}
+
+    def image(fd):
+        if fd not in images:
+            try:
+                images[fd] = blp_image(casc(cache, fd), target)
+            except Exception:
+                images[fd] = None
+        return images[fd]
+
+    return image
+
 
 def render_variant(job):
     """One model with one geoset choice: convert it, then draw each of its looks."""
     cache, valid, out, fdid, geosets, stem, looks, fallback = job
     done = []
     try:
-        raw = casc(cache, fdid)
-        m = Retail(raw)
-        anims = {}
-        for a, s, f in m.afid:
-            if f and a in valid:
-                try:
-                    anims[(a, s)] = casc(cache, f)
-                except Exception:
-                    pass
-        conv = Converter(raw, casc(cache, m.sfid[0]), anims, valid, stem)
-        names = listfile(cache, m.txid)
-        conv.mask_textures = {i for i, fd in enumerate(m.txid)
-                              if any(w in os.path.basename(names.get(fd, "")) for w in MASK_WORDS)}
-        drawn = conv.batch_textures(dict(geosets))
-        textures = []
-        for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
-            fd = m.txid[i] if i < len(m.txid) else 0
-            if i not in drawn or (ttype not in (11, 12, 13) and not fd):
-                textures.append((None, tflags, None))
-            elif ttype in (11, 12, 13):
-                textures.append((ttype, tflags, None))
-            else:
-                textures.append((0, tflags, "T%d.blp" % fd))
-        m2, skin = conv.convert(textures, dict(geosets))
-        model = Model(m2, skin)
-        fixed = {}
-        for i, (ttype, tflags, _n, _o) in enumerate(model.textures):
-            if ttype == 0 and textures[i][2] and textures[i][0] is not None:
-                fixed[i] = (int(textures[i][2][1:-4]), tflags)
+        model, fixed = convert_variant(cache, valid, fdid, geosets, stem)
     except Exception as e:
         return [(d, "convert: %s" % (str(e)[:80] or type(e).__name__)) for d, _t in looks]
-    images = {}
-
-    def image(fd):
-        if fd not in images:
-            try:
-                images[fd] = blp_image(casc(cache, fd))
-            except Exception:
-                images[fd] = None
-        return images[fd]
-
+    image = blp_reader(cache)
     for display, tex in looks:
         try:
-            use, note = {}, []
-            for i, (ttype, tflags, _n, _o) in enumerate(model.textures):
-                if i in fixed:
-                    fd = fixed[i][0]
-                elif 11 <= ttype <= 13:
-                    fd = tex[ttype - 11] or fallback.get(ttype - 11, 0)
-                    if not tex[ttype - 11]:
-                        note.append("slot %d %s" % (ttype - 11, "borrowed" if fd else "empty"))
-                else:
-                    continue
-                img = image(fd) if fd else None
-                if img is None:
-                    img = np.full((4, 4, 4), 255, np.uint8)  # the client draws a missing texture white
-                    if fd:
-                        note.append("texture %d unreadable" % fd)
-                use[i] = (img, tflags)
+            use, note = look_textures(model, fixed, tex, fallback, image)
             Image.fromarray(draw(model, use)).save(os.path.join(out, "img", "%s.jpg" % display), quality=86)
             done.append((display, "; ".join(note)))
         except Exception as e:
