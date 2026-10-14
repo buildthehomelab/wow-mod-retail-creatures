@@ -62,6 +62,10 @@ Nothing from Blizzard is stored here or in the packs; the files come from
   warcraftmounts.com), pets by pet type. Click a look to flag it and copy the flagged list out.
   It shows what the converter kept, one frame of it; particles, the other animations and the
   rider's seat still need a client.
+- `tools/turntable.py` draws looks the same way from a ring of angles, on a transparent
+  background at one scale, as a WebP strip of frames side by side (36 by default) that a
+  launcher or web page can turn, for example a shop's preview of a mount. `--only` takes retail
+  display ids: the census's, or any other skin of a model the census converted.
 - `tools/build_patch.py` builds a pack: it downloads everything, converts each model once per
   geoset combination, and writes the patch. Each look becomes a CreatureDisplayInfo row on a
   CreatureModelData row cloned from the stock model it replaces, so sounds and footprints stay
@@ -145,7 +149,7 @@ module uses.
 
 ## Requirements
 
-- Python 3.10+ (standard library only; `contact_sheet.py` also needs numpy and Pillow).
+- Python 3.10+ (standard library only; `contact_sheet.py` and `turntable.py` also need numpy and Pillow).
 - [StormLib](https://github.com/ladislav-zezula/StormLib) as a shared library. The default is
   `/usr/local/lib/libstorm.dylib`; point `STORMLIB` at yours.
 
