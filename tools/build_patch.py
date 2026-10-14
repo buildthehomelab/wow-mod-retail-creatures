@@ -405,7 +405,7 @@ def main():
             files[name] = ("file", p)
 
     # Models whose id the base client already uses (Reforged HD has 9511 and 9571) move past the
-    # block, the way tools in wow-server's rebase_patch.py --renumber do it, so both agree.
+    # block, to the next ids free in both, so a rerun on the same base picks the same ids.
     ours = {row[0] for row, _n in new_cmd}
     after = max(ours, default=0)
     for row, _n in new_cmd:
