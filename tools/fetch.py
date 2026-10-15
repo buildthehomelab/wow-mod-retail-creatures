@@ -53,10 +53,10 @@ def tact(cache):
         return _tact[cache]
 
 
-def casc(cache, fdid):
-    """A retail file's bytes. From the CDN: KeyError if the build lacks it, tact.Encrypted if
-    it is unreleased content."""
-    if SOURCE != "cdn":
+def casc(cache, fdid, source=None):
+    """A retail file's bytes, from source (wago or cdn; default RETAIL_SOURCE). From the CDN:
+    KeyError if the build lacks it, tact.Encrypted if it is unreleased content."""
+    if (source or SOURCE) != "cdn":
         return fetch(CASC.format(fdid), os.path.join(cache, "casc", str(fdid)))
     path = os.path.join(cache, "cdn", str(fdid))
     if os.path.exists(path):

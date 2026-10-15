@@ -101,6 +101,30 @@ class Skin:
         return [x[0] for x in out] if len(fmt) == 2 else out
 
 
+class StaleSkin(ValueError):
+    """The skin was made for another version of the model (wago.tools mixes builds)."""
+
+
+def skin_mismatches(model, skin):
+    """How many of the skin's bone influences name another bone than the model's own vertex.
+    A skin made for the same model names the same bones everywhere; one made for another
+    version of it joins the wrong vertices into triangles, which draws as shards."""
+    lookup = [x[0] for x in model.arr("bone_lookup", "<H")]
+    verts = model.arr("vertices", "<12x4B4B28x")
+    bad = 0
+    for sub in skin.submeshes:
+        for v in range(sub[2], sub[2] + sub[3]):
+            if v >= len(skin.vmap) or skin.vmap[v] >= len(verts):
+                bad += 1
+                continue
+            w, g = verts[skin.vmap[v]][:4], verts[skin.vmap[v]][4:]
+            for k in range(4):
+                i = sub[7] + skin.bones[4 * v + k]
+                if w[k] and (lookup[i] if i < len(lookup) else -1) != g[k]:
+                    bad += 1
+    return bad
+
+
 def anim_buffer(data):
     """Raw keyframe data of a retail .anim file (offsets in the model point into it)."""
     if data[:4] == b"AFM2":
@@ -154,6 +178,10 @@ class Converter:
         self.m = Retail(model_data)
         self.skin = Skin(skin_data)
         self.name = name
+        bad = skin_mismatches(self.m, self.skin)
+        if bad:
+            raise StaleSkin("%s: the skin was made for another version of the model (%d bone "
+                            "influences differ)" % (name, bad))
         md = self.m.md
         self.seqs = self.m.arr("sequences", SEQUENCE)
         # Where each old sequence's keyframes live (aliases borrow their target's).

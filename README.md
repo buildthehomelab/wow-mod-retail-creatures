@@ -183,7 +183,10 @@ module uses.
   cached in `--cache`. If it stays down, build with `RETAIL_SOURCE=cdn`.
 - **A model's skin or animations don't fit it** (an index out of range in the converter, or many
   animations dropped as stale): wago.tools doesn't serve every file from the same build. Build
-  with `RETAIL_SOURCE=cdn`.
+  with `RETAIL_SOURCE=cdn`. A skin made for another version of its model draws as shards in
+  the client; the converter refuses one (`StaleSkin`), and `build_patch.py` then takes that
+  model, its skin and animations from Blizzard's CDN on its own (a warning says so), so the
+  CDN's indexes get downloaded the first time it happens.
 
 ## Credits
 
