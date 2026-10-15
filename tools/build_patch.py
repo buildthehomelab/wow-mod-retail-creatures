@@ -51,8 +51,16 @@ from m2creature import Converter, Retail
 #                   only a mask (MASK_WORDS in its file name)
 #   template        {kind of look: stock CreatureDisplayInfo id it clones}
 #   source          where the looks come from, for the head of the generated SQL
-PACK_FIELDS = ("looks", "root", "first_display", "first_model", "preview_base", "subname", "sort_base",
-               "prune_textures", "template", "source")
+# Optional, for a pack that is a library of models and not a set of looks to pick in a window:
+#   transmog        false: no rows for mod-transmog-plus and no preview creatures (preview_base,
+#                   subname and sort_base can then be left out); the SQL is the DBC rows only
+#   plain           true: the new rows carry no sounds and no footprints. Hundreds of unlike
+#                   models can't all sound like the one stock creature their kind clones
+#   archives        {kind of look: MPQ file name}: with --data-dir, each kind's models and textures
+#                   go into their own archive there, and --out holds the two DBCs only. The big
+#                   archives then never change when another patch's DBC rows do
+PACK_FIELDS = ("looks", "root", "first_display", "first_model", "prune_textures", "template", "source")
+TRANSMOG_FIELDS = ("preview_base", "subname", "sort_base")
 
 
 def load_pack(folder):
@@ -61,7 +69,8 @@ def load_pack(folder):
         sys.exit("no pack.json in %s: --pack takes a pack repo's folder" % folder)
     with open(path, encoding="utf-8") as f:
         pack = json.load(f)
-    missing = [k for k in PACK_FIELDS if k not in pack]
+    pack.setdefault("transmog", True)
+    missing = [k for k in PACK_FIELDS + (TRANSMOG_FIELDS if pack["transmog"] else ()) if k not in pack]
     if missing:
         sys.exit("%s: missing %s" % (path, ", ".join(missing)))
     pack["folder"] = folder
@@ -164,7 +173,12 @@ def pack_mpq(out, files):
     if os.path.exists(out):
         os.remove(out)
     h = H()
-    if not lib.SFileCreateArchive(out.encode(), 0x00300000, max(64, len(files) * 2), ctypes.byref(h)):
+    # With a listfile and attributes. Past 2 GB of files the archive is format 2, like every big
+    # archive the client ships with: format 1 keeps 32-bit offsets, and StormLib itself no longer
+    # lists a format 1 archive whose tables lie past 2 GB by name.
+    big = sum(os.path.getsize(src) for src, _name in files) > 0x7FFFFFFF
+    if not lib.SFileCreateArchive(out.encode(), 0x00300000 | (0x01000000 if big else 0), max(64, len(files) * 2),
+                                  ctypes.byref(h)):
         sys.exit("can't create " + out)
     for src, name in files:
         if not lib.SFileAddFileEx(h, src.encode(), name.encode(), 0x80000200, 0x02, 0x02):
@@ -199,6 +213,7 @@ def main():
     ap.add_argument("--sql")
     ap.add_argument("--max-texture", type=int, default=1024)
     ap.add_argument("--only", help="comma-separated display ids (test builds)")
+    ap.add_argument("--data-dir", help="for a pack with archives: write them here, and only the DBCs to --out")
     ap.add_argument("--dbc-only", action="store_true",
                     help="pack only the two DBCs: a small patch that loads after the full one for "
                          "clients whose own patch (an HD creature pack) ships these DBCs; build it "
@@ -255,6 +270,7 @@ def main():
         texture_names = listfile(args.cache, fdids)
 
     files = {}  # archive name -> source path
+    folder_kind = {}  # a model's folder -> the kind of the first look on it (which archive it goes to)
     variants = {}  # (fdid, geosets) -> (model id, folder, stem)
     texture_slots = {}
     warnings = []
@@ -263,8 +279,9 @@ def main():
     client_cmd = {}  # the client's own model rows the server lacks, by id: mirrored too
     for l in looks:
         display = int(l["display"])
-        preview = int(l["preview"]) if l.get("preview") else pack["preview_base"] + display - pack["first_display"]
-        sql_rows.append((display, l["form"], l["name"], int(l["tier"]), preview))
+        if pack["transmog"]:
+            preview = int(l["preview"]) if l.get("preview") else pack["preview_base"] + display - pack["first_display"]
+            sql_rows.append((display, l["form"], l["name"], int(l["tier"]), preview))
         if l.get("client_display"):
             # The client's own display at another size: a copy of its row on the same model.
             row = row_of(cdi_rows, int(l["client_display"]))
@@ -354,6 +371,8 @@ def main():
                 row[14] = f32(rm["CollisionWidth"])
                 row[15] = f32(rm["CollisionHeight"])
             row[16] = f32(rm["MountHeight"])
+            if pack.get("plain"):
+                row[6] = row[13] = 0  # FootprintTextureID, SoundID
             for k in range(6):
                 row[17 + k] = f32(rm["GeoBox_%d" % k])
             cmd_rows.append(row)
@@ -367,10 +386,13 @@ def main():
             if conv.dropped:
                 warnings.append("%s: stale .anim files, animations %s dropped" % (stem, sorted(set(conv.dropped))))
         model_id, folder, stem = variants[key]
+        folder_kind.setdefault(folder, l["form"])
         row = row_of(cdi_rows, pack["template"][l["form"]])
         row[0] = display
         row[1] = model_id
         row[3] = 0
+        if pack.get("plain"):
+            row[2] = row[12] = 0  # SoundID, NPCSoundID
         row[4] = f32(l.get("display_scale") or rd["CreatureModelScale"] or 1)
         row[5] = int(rd["CreatureModelAlpha"]) or 255
         override = [int(x) for x in l.get("textures", "").split(",") if x]
@@ -423,11 +445,23 @@ def main():
     write_dbc(os.path.join(args.work, "CreatureModelData.dbc"), cmd_rows, cmd_str, cmd_fields)
     files["DBFilesClient\\CreatureDisplayInfo.dbc"] = ("file", os.path.join(args.work, "CreatureDisplayInfo.dbc"))
     files["DBFilesClient\\CreatureModelData.dbc"] = ("file", os.path.join(args.work, "CreatureModelData.dbc"))
-    if args.dbc_only:
+    data = {}  # archive file name -> its files
+    if args.dbc_only or (args.data_dir and pack.get("archives")):
+        if not args.dbc_only:
+            first = next(iter(pack["archives"].values()))
+            for name in files:
+                if not name.startswith("DBFilesClient\\"):
+                    kind = folder_kind.get(name.rsplit("\\", 1)[0])
+                    data.setdefault(pack["archives"].get(kind, first), {})[name] = files[name]
         files = {n: f for n, f in files.items() if n.startswith("DBFilesClient\\")}
     pack_mpq(args.out, [(src, name) for name, (_k, src) in sorted(files.items())])
     print("%s: %d looks, %d models, %d files, %.1f MB" % (
         args.out, len(looks), len(variants), len(files), os.path.getsize(args.out) / 1e6))
+    for archive, part in sorted(data.items()):
+        os.makedirs(args.data_dir, exist_ok=True)
+        path = os.path.join(args.data_dir, archive)
+        pack_mpq(path, [(src, name) for name, (_k, src) in sorted(part.items())])
+        print("%s: %d files, %.1f MB" % (path, len(part), os.path.getsize(path) / 1e6))
     for w in warnings:
         print("warning:", w)
     if args.sql:
@@ -466,6 +500,17 @@ def write_sql(path, pack, rows, new_cdi, new_cmd, client_cmd=()):
     """The pack's world SQL, which its repo ships as a server module: the looks for
     mod-transmog-plus, one creature per look for the addon's preview (3.3.5 model frames can show
     a creature entry, not a display id), and the patch's new DBC rows for the server's stores."""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("-- Generated by buildthehomelab/wow-mod-retail-creatures tools/build_patch.py from\n")
+        f.write("-- %s\n" % pack["source"])
+        if pack["transmog"]:
+            write_transmog_sql(f, pack, rows)
+        write_dbc_sql(f, new_cdi, new_cmd, client_cmd)
+    print("wrote", path)
+
+
+def write_transmog_sql(f, pack, rows):
+    """The looks for mod-transmog-plus and their preview creatures."""
     previews = [(preview, d, name) for d, _form, name, _tier, preview in rows]
     first, last = pack["preview_base"], pack["preview_base"] + 499
     if any(not first <= entry <= last for entry, _d, _n in previews):
@@ -473,63 +518,61 @@ def write_sql(path, pack, rows, new_cdi, new_cmd, client_cmd=()):
     if len({entry for entry, _d, _n in previews}) != len(previews):
         sys.exit("two looks share a preview creature entry")
     kinds = ", ".join(sql_str(k) for k in pack["template"])
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("-- Generated by buildthehomelab/wow-mod-retail-creatures tools/build_patch.py from\n")
-        f.write("-- %s\n" % pack["source"])
-        f.write("-- The looks show in mod-transmog-plus's Transmogrify window. That module owns the table; it is\n"
-                "-- made here too so this file applies whichever of the two comes first.\n")
-        f.write(FORMS_TABLE)
-        # Only this pack's rows: their preview creatures are in its block. Another module can have
-        # looks of the same forms (mod-retail-pets' Whoofle Bramblewing is a flight form look).
-        f.write("DELETE FROM `mod_transmog_plus_forms` WHERE `Form` IN (%s) AND `PreviewCreature` BETWEEN %d AND %d;\n" % (
-            kinds, first, last))
-        f.write("INSERT INTO `mod_transmog_plus_forms` (`DisplayId`, `Form`, `Name`, `UnlockPhase`, `PreviewCreature`, `SortOrder`) VALUES\n")
-        f.write(",\n".join("(%d, %s, %s, %d, %d, %d)" % (d, sql_str(form), sql_str(name), tier, preview,
-                                                       pack["sort_base"] + i + 1)
-                           for i, (d, form, name, tier, preview) in enumerate(rows)) + ";\n\n")
-        # Only this pack's own creatures go: another module may have taken an entry in the block
-        # (mod-lost-legendaries' Shade of Highlord Mograine is 9501300, inside the druid forms').
-        mine = "BETWEEN %d AND %d AND t.`subname` = %s" % (first, last, sql_str(pack["subname"]))
-        f.write("-- Preview creatures, in %d-%d with subname %s: never spawned.\n" % (first, last, sql_str(pack["subname"])))
-        f.write("DELETE m FROM `creature_template_model` m JOIN `creature_template` t ON t.`entry` = m.`CreatureID`\n"
-                "WHERE t.`entry` %s;\n" % mine)
-        f.write("DELETE t FROM `creature_template` t WHERE t.`entry` %s;\n" % mine)
-        f.write("INSERT INTO `creature_template` (`entry`, `name`, `subname`, `minlevel`, `maxlevel`, `faction`, `type`, `unit_class`) VALUES\n")
-        f.write(",\n".join("(%d, %s, %s, 1, 1, 35, 1, 1)" % (e, sql_str(n), sql_str(pack["subname"]))
-                           for e, _d, n in previews) + ";\n")
-        f.write("INSERT INTO `creature_template_model` (`CreatureID`, `Idx`, `CreatureDisplayID`, `DisplayScale`, `Probability`) VALUES\n")
-        f.write(",\n".join("(%d, 0, %d, 1, 1)" % (e, d) for e, d, _n in previews) + ";\n\n")
+    f.write("-- The looks show in mod-transmog-plus's Transmogrify window. That module owns the table; it is\n"
+            "-- made here too so this file applies whichever of the two comes first.\n")
+    f.write(FORMS_TABLE)
+    # Only this pack's rows: their preview creatures are in its block. Another module can have
+    # looks of the same forms (mod-retail-pets' Whoofle Bramblewing is a flight form look).
+    f.write("DELETE FROM `mod_transmog_plus_forms` WHERE `Form` IN (%s) AND `PreviewCreature` BETWEEN %d AND %d;\n" % (
+        kinds, first, last))
+    f.write("INSERT INTO `mod_transmog_plus_forms` (`DisplayId`, `Form`, `Name`, `UnlockPhase`, `PreviewCreature`, `SortOrder`) VALUES\n")
+    f.write(",\n".join("(%d, %s, %s, %d, %d, %d)" % (d, sql_str(form), sql_str(name), tier, preview,
+                                                   pack["sort_base"] + i + 1)
+                       for i, (d, form, name, tier, preview) in enumerate(rows)) + ";\n\n")
+    # Only this pack's own creatures go: another module may have taken an entry in the block
+    # (mod-lost-legendaries' Shade of Highlord Mograine is 9501300, inside the druid forms').
+    mine = "BETWEEN %d AND %d AND t.`subname` = %s" % (first, last, sql_str(pack["subname"]))
+    f.write("-- Preview creatures, in %d-%d with subname %s: never spawned.\n" % (first, last, sql_str(pack["subname"])))
+    f.write("DELETE m FROM `creature_template_model` m JOIN `creature_template` t ON t.`entry` = m.`CreatureID`\n"
+            "WHERE t.`entry` %s;\n" % mine)
+    f.write("DELETE t FROM `creature_template` t WHERE t.`entry` %s;\n" % mine)
+    f.write("INSERT INTO `creature_template` (`entry`, `name`, `subname`, `minlevel`, `maxlevel`, `faction`, `type`, `unit_class`) VALUES\n")
+    f.write(",\n".join("(%d, %s, %s, 1, 1, 35, 1, 1)" % (e, sql_str(n), sql_str(pack["subname"]))
+                       for e, _d, n in previews) + ";\n")
+    f.write("INSERT INTO `creature_template_model` (`CreatureID`, `Idx`, `CreatureDisplayID`, `DisplayScale`, `Probability`) VALUES\n")
+    f.write(",\n".join("(%d, 0, %d, 1, 1)" % (e, d) for e, d, _n in previews) + ";\n\n")
 
-        if not new_cdi:
-            print("wrote", path)
-            return
-        # The server checks creature displays against its own DBC stores: give it the patch's rows.
-        ids = [r[0] for r, _t in new_cdi]
-        f.write("-- The patch's CreatureDisplayInfo and CreatureModelData rows, for the server's DBC stores.\n")
-        f.write("DELETE FROM `creaturedisplayinfo_dbc` WHERE `ID` BETWEEN %d AND %d;\n" % (min(ids), max(ids)))
-        f.write("INSERT INTO `creaturedisplayinfo_dbc` (`ID`, `ModelID`, `SoundID`, `ExtendedDisplayInfoID`, `CreatureModelScale`, `CreatureModelAlpha`, `TextureVariation_1`, `TextureVariation_2`, `TextureVariation_3`, `PortraitTextureName`, `BloodLevel`, `BloodID`, `NPCSoundID`, `ParticleColorID`, `CreatureGeosetData`, `ObjectEffectPackageID`) VALUES\n")
-        f.write(",\n".join("(%d, %d, %d, %d, %s, %d, %s, %s, %s, '', %d, %d, %d, %d, %d, %d)" % (
-            r[0], si(r[1]), si(r[2]), si(r[3]), fl(r[4]), si(r[5]), sql_str(t[0]), sql_str(t[1]), sql_str(t[2]),
-            si(r[10]), si(r[11]), si(r[12]), si(r[13]), si(r[14]), si(r[15])) for r, t in new_cdi) + ";\n")
-        # The models: the patch's own block, and any of the client's own rows past the stock table
-        # (an HD pack's) that a look sits on, which the server has to know as well.
-        cmd_insert = "INSERT INTO `creaturemodeldata_dbc` (`ID`, `Flags`, `ModelName`, `SizeClass`, `ModelScale`, `BloodID`, `FootprintTextureID`, `FootprintTextureLength`, `FootprintTextureWidth`, `FootprintParticleScale`, `FoleyMaterialID`, `FootstepShakeSize`, `DeathThudShakeSize`, `SoundID`, `CollisionWidth`, `CollisionHeight`, `MountHeight`, `GeoBoxMinX`, `GeoBoxMinY`, `GeoBoxMinZ`, `GeoBoxMaxX`, `GeoBoxMaxY`, `GeoBoxMaxZ`, `WorldEffectScale`, `AttachedEffectScale`, `MissileCollisionRadius`, `MissileCollisionPush`, `MissileCollisionRaise`) VALUES\n"
-        def cmd_values(pairs):
-            return ",\n".join("(%d, %d, %s, %d, %s, %d, %d, %s, %s, %s, %d, %d, %d, %d, %s)" % (
-                r[0], si(r[1]), sql_str(n), si(r[3]), fl(r[4]), si(r[5]), si(r[6]), fl(r[7]), fl(r[8]), fl(r[9]),
-                si(r[10]), si(r[11]), si(r[12]), si(r[13]), ", ".join(fl(x) for x in r[14:28])) for r, n in pairs) + ";\n"
-        mids = [r[0] for r, _n in new_cmd]
-        if mids:
-            f.write("DELETE FROM `creaturemodeldata_dbc` WHERE `ID` BETWEEN %d AND %d;\n" % (min(mids), max(mids)))
-            f.write(cmd_insert + cmd_values(new_cmd))
-        if client_cmd:
-            f.write("-- The client's own model rows these looks use that the stock tables lack.\n")
-            f.write("DELETE FROM `creaturemodeldata_dbc` WHERE `ID` IN (%s);\n" % ", ".join(str(r[0]) for r, _n in client_cmd))
-            f.write(cmd_insert + cmd_values(client_cmd))
-        f.write("DELETE FROM `creature_model_info` WHERE `DisplayID` BETWEEN %d AND %d;\n" % (min(ids), max(ids)))
-        f.write("INSERT INTO `creature_model_info` (`DisplayID`, `BoundingRadius`, `CombatReach`, `Gender`, `DisplayID_Other_Gender`) VALUES\n")
-        f.write(",\n".join("(%d, 1, 1.5, 2, 0)" % d for d in ids) + ";\n")
-    print("wrote", path)
+
+def write_dbc_sql(f, new_cdi, new_cmd, client_cmd):
+    """The patch's new DBC rows, as rows of the server's *_dbc tables."""
+    if not new_cdi:
+        return
+    # The server checks creature displays against its own DBC stores: give it the patch's rows.
+    ids = [r[0] for r, _t in new_cdi]
+    f.write("-- The patch's CreatureDisplayInfo and CreatureModelData rows, for the server's DBC stores.\n")
+    f.write("DELETE FROM `creaturedisplayinfo_dbc` WHERE `ID` BETWEEN %d AND %d;\n" % (min(ids), max(ids)))
+    f.write("INSERT INTO `creaturedisplayinfo_dbc` (`ID`, `ModelID`, `SoundID`, `ExtendedDisplayInfoID`, `CreatureModelScale`, `CreatureModelAlpha`, `TextureVariation_1`, `TextureVariation_2`, `TextureVariation_3`, `PortraitTextureName`, `BloodLevel`, `BloodID`, `NPCSoundID`, `ParticleColorID`, `CreatureGeosetData`, `ObjectEffectPackageID`) VALUES\n")
+    f.write(",\n".join("(%d, %d, %d, %d, %s, %d, %s, %s, %s, '', %d, %d, %d, %d, %d, %d)" % (
+        r[0], si(r[1]), si(r[2]), si(r[3]), fl(r[4]), si(r[5]), sql_str(t[0]), sql_str(t[1]), sql_str(t[2]),
+        si(r[10]), si(r[11]), si(r[12]), si(r[13]), si(r[14]), si(r[15])) for r, t in new_cdi) + ";\n")
+    # The models: the patch's own block, and any of the client's own rows past the stock table
+    # (an HD pack's) that a look sits on, which the server has to know as well.
+    cmd_insert = "INSERT INTO `creaturemodeldata_dbc` (`ID`, `Flags`, `ModelName`, `SizeClass`, `ModelScale`, `BloodID`, `FootprintTextureID`, `FootprintTextureLength`, `FootprintTextureWidth`, `FootprintParticleScale`, `FoleyMaterialID`, `FootstepShakeSize`, `DeathThudShakeSize`, `SoundID`, `CollisionWidth`, `CollisionHeight`, `MountHeight`, `GeoBoxMinX`, `GeoBoxMinY`, `GeoBoxMinZ`, `GeoBoxMaxX`, `GeoBoxMaxY`, `GeoBoxMaxZ`, `WorldEffectScale`, `AttachedEffectScale`, `MissileCollisionRadius`, `MissileCollisionPush`, `MissileCollisionRaise`) VALUES\n"
+    def cmd_values(pairs):
+        return ",\n".join("(%d, %d, %s, %d, %s, %d, %d, %s, %s, %s, %d, %d, %d, %d, %s)" % (
+            r[0], si(r[1]), sql_str(n), si(r[3]), fl(r[4]), si(r[5]), si(r[6]), fl(r[7]), fl(r[8]), fl(r[9]),
+            si(r[10]), si(r[11]), si(r[12]), si(r[13]), ", ".join(fl(x) for x in r[14:28])) for r, n in pairs) + ";\n"
+    mids = [r[0] for r, _n in new_cmd]
+    if mids:
+        f.write("DELETE FROM `creaturemodeldata_dbc` WHERE `ID` BETWEEN %d AND %d;\n" % (min(mids), max(mids)))
+        f.write(cmd_insert + cmd_values(new_cmd))
+    if client_cmd:
+        f.write("-- The client's own model rows these looks use that the stock tables lack.\n")
+        f.write("DELETE FROM `creaturemodeldata_dbc` WHERE `ID` IN (%s);\n" % ", ".join(str(r[0]) for r, _n in client_cmd))
+        f.write(cmd_insert + cmd_values(client_cmd))
+    f.write("DELETE FROM `creature_model_info` WHERE `DisplayID` BETWEEN %d AND %d;\n" % (min(ids), max(ids)))
+    f.write("INSERT INTO `creature_model_info` (`DisplayID`, `BoundingRadius`, `CombatReach`, `Gender`, `DisplayID_Other_Gender`) VALUES\n")
+    f.write(",\n".join("(%d, 1, 1.5, 2, 0)" % d for d in ids) + ";\n")
 
 
 if __name__ == "__main__":
