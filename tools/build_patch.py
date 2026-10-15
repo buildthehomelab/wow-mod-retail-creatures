@@ -479,7 +479,10 @@ def write_sql(path, pack, rows, new_cdi, new_cmd, client_cmd=()):
         f.write("-- The looks show in mod-transmog-plus's Transmogrify window. That module owns the table; it is\n"
                 "-- made here too so this file applies whichever of the two comes first.\n")
         f.write(FORMS_TABLE)
-        f.write("DELETE FROM `mod_transmog_plus_forms` WHERE `Form` IN (%s);\n" % kinds)
+        # Only this pack's rows: their preview creatures are in its block. Another module can have
+        # looks of the same forms (mod-retail-pets' Whoofle Bramblewing is a flight form look).
+        f.write("DELETE FROM `mod_transmog_plus_forms` WHERE `Form` IN (%s) AND `PreviewCreature` BETWEEN %d AND %d;\n" % (
+            kinds, first, last))
         f.write("INSERT INTO `mod_transmog_plus_forms` (`DisplayId`, `Form`, `Name`, `UnlockPhase`, `PreviewCreature`, `SortOrder`) VALUES\n")
         f.write(",\n".join("(%d, %s, %s, %d, %d, %d)" % (d, sql_str(form), sql_str(name), tier, preview,
                                                        pack["sort_base"] + i + 1)
