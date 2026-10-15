@@ -72,7 +72,10 @@ Nothing from Blizzard is stored here or in the packs; the files come from
   the same. With `--sql` it writes the pack's server SQL: the looks for mod-transmog-plus, one
   preview creature per look (a 3.3.5 model frame can show a creature, not a display id), and
   the server copies of the new DBC rows. Textures larger than `--max-texture` (default 1024)
-  lose their top mip levels.
+  lose their top mip levels. Textures that alpha-keyed batches draw (fur, feathers, leaves) get
+  their alpha stretched: retail keeps a texel from alpha 128, the 3.3.5 client only from 224,
+  so as shipped they come out shredded. Where blended batches draw the same texture, the
+  alpha-keyed ones get their own copy (`T<id>k.blp`, in a free skin slot for a slot texture).
 
 ## Building a pack
 

@@ -164,6 +164,112 @@ def shrink_blp(data, max_size):
     return bytes(out + body)
 
 
+# Alpha key (blend mode 1) cuts at a different alpha in each client. Retail keeps a texel from
+# alpha 128; the 3.3.5 client only from 224. Retail fur, feathers and leaves have most of their
+# alpha in between, so in 3.3.5 they come out shredded (the Chaos-Forged Gryphon's wings).
+# A texture alpha-key batches draw gets its alpha stretched so 128 lands on 224 (0-127 onto
+# 0-223, 128-255 onto 224-255): the same texels pass. Blended batches read alpha as opacity, so
+# a texture both kinds draw gets a separate copy for the alpha-key ones (key_copies in convert).
+ALPHA_KEY = (128, 224)
+
+
+def key_alpha_value(a):
+    retail, client = ALPHA_KEY
+    if a < retail:
+        return min(client - 1, (a * client + retail // 2) // retail)
+    return client + ((a - retail) * (255 - client) + (255 - retail) // 2) // (255 - retail)
+
+
+KEY_ALPHA = bytes(key_alpha_value(a) for a in range(256))
+
+
+def key_alpha_nibbles():
+    """4-bit alpha (DXT3, 4-bit palette alpha): the stretched value, kept on its side of the cut."""
+    out = []
+    for v in range(16):
+        q = (KEY_ALPHA[v * 17] + 8) // 17
+        if v * 17 >= ALPHA_KEY[0] and q * 17 < ALPHA_KEY[1]:
+            q += 1
+        elif v * 17 < ALPHA_KEY[0] and q * 17 >= ALPHA_KEY[1]:
+            q -= 1
+        out.append(q)
+    return out
+
+
+KEY_NIBBLES = key_alpha_nibbles()
+
+
+def dxt5_values(a0, a1):
+    if a0 > a1:
+        return [a0, a1] + [((7 - k) * a0 + k * a1) // 7 for k in range(1, 7)]
+    return [a0, a1] + [((5 - k) * a0 + k * a1) // 5 for k in range(1, 5)] + [0, 255]
+
+
+_dxt5_cache = {}
+
+
+def dxt5_key_block(a0, a1):
+    """New endpoints and {old index: new index} for a DXT5 alpha block with these endpoints."""
+    hit = _dxt5_cache.get((a0, a1))
+    if hit:
+        return hit
+    old = dxt5_values(a0, a1)
+    n0, n1 = KEY_ALPHA[a0], KEY_ALPHA[a1]
+    if a0 > a1 and n0 == n1:  # the stretch can merge close endpoints: then all eight are one value
+        n1 = n0 - 1 if n0 else 0
+        n0 = max(n0, n1 + 1)
+    new = dxt5_values(n0, n1)
+    remap = []
+    for v in old:
+        target, side = KEY_ALPHA[v], v >= ALPHA_KEY[0]
+        same = [j for j in range(8) if (new[j] >= ALPHA_KEY[1]) == side] or range(8)
+        remap.append(min(same, key=lambda j: abs(new[j] - target)))
+    _dxt5_cache[(a0, a1)] = hit = (n0, n1, remap)
+    return hit
+
+
+def key_alpha_blp(data):
+    """The BLP2 with every mip's alpha stretched for 3.3.5's alpha key (see ALPHA_KEY)."""
+    if data[:4] != b"BLP2":
+        return data
+    enc, adepth, atype = struct.unpack_from("<3B", data, 8)
+    w, h = struct.unpack_from("<II", data, 12)
+    offs = struct.unpack_from("<16I", data, 20)
+    sizes = struct.unpack_from("<16I", data, 84)
+    out = bytearray(data)
+    for i in range(16):
+        if not sizes[i]:
+            break
+        mw, mh = max(1, w >> i), max(1, h >> i)
+        o, n = offs[i], sizes[i]
+        if enc == 2 and atype == 7:  # DXT5
+            for b in range(o, o + n - 15, 16):
+                n0, n1, remap = dxt5_key_block(out[b], out[b + 1])
+                bits = int.from_bytes(out[b + 2:b + 8], "little")
+                nb = 0
+                for p in range(16):
+                    nb |= remap[(bits >> (3 * p)) & 7] << (3 * p)
+                out[b], out[b + 1] = n0, n1
+                out[b + 2:b + 8] = nb.to_bytes(6, "little")
+        elif enc == 2 and atype == 1:  # DXT3: 4-bit alpha
+            for b in range(o, o + n - 15, 16):
+                for k in range(8):
+                    v = out[b + k]
+                    out[b + k] = KEY_NIBBLES[v & 15] | KEY_NIBBLES[v >> 4] << 4
+        elif enc == 1 and adepth == 8:  # palette, then one alpha byte per texel
+            a = o + mw * mh
+            out[a:a + mw * mh] = bytes(out[a:a + mw * mh]).translate(KEY_ALPHA)
+        elif enc == 1 and adepth == 4:
+            a = o + mw * mh
+            for k in range(a, a + (mw * mh + 1) // 2):
+                v = out[k]
+                out[k] = KEY_NIBBLES[v & 15] | KEY_NIBBLES[v >> 4] << 4
+        elif enc == 3:  # BGRA
+            out[o + 3:o + n:4] = bytes(out[o + 3:o + n:4]).translate(KEY_ALPHA)
+        # DXT1 and 1-bit alpha are all or nothing already.
+    return bytes(out)
+
+
 # --- MPQ ---------------------------------------------------------------------------------------
 
 def pack_mpq(out, files):
@@ -277,6 +383,9 @@ def main():
     folder_kind = {}  # a model's folder -> the kind of the first look on it (which archive it goes to)
     variants = {}  # (fdid, geosets) -> (model id, folder, stem)
     texture_slots = {}
+    texture_use = collections.defaultdict(set)  # texture file: blend modes drawing it
+    slot_use = collections.defaultdict(lambda: collections.defaultdict(set))  # model key: {slot: modes}
+    texture_key_slots = {}  # model key: {slot holding an alpha-key copy: the slot it copies}
     warnings = []
     sql_rows = []
     new_cmd, new_cdi = [], []  # rows added to the client DBCs, mirrored into the server's *_dbc tables
@@ -325,12 +434,17 @@ def main():
             stem = folder_name(l["model"])
             if any(k[0] == fdid for k in variants):
                 stem += "_" + hashlib.md5(repr(geosets).encode()).hexdigest()[:6]
-            conv = Converter(raw, casc(args.cache, m.sfid[0]), anims, valid, stem)
-            drawn = None
-            if pack["prune_textures"]:
-                conv.mask_textures = {i for i, fd in enumerate(m.txid) if any(
-                    w in os.path.basename(texture_names.get(fd, "")) for w in MASK_WORDS)}
-                drawn = conv.batch_textures(dict(geosets))
+            skin_raw = casc(args.cache, m.sfid[0])
+
+            def converter():
+                c = Converter(raw, skin_raw, anims, valid, stem)
+                if pack["prune_textures"]:
+                    c.mask_textures = {i for i, fd in enumerate(m.txid) if any(
+                        w in os.path.basename(texture_names.get(fd, "")) for w in MASK_WORDS)}
+                return c
+
+            conv = converter()
+            drawn = conv.batch_textures(dict(geosets)) if pack["prune_textures"] else None
             textures, slots = [], set()
             for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
                 if drawn is not None and i not in drawn:
@@ -356,6 +470,37 @@ def main():
                     if 11 <= ttype <= 13:
                         slots.add(ttype - 11)
             m2, skin = conv.convert(textures, dict(geosets))
+            # A texture alpha-key and blended batches both draw: the alpha-key ones get a copy
+            # (see ALPHA_KEY), in a free creature skin slot when the texture is a slot's.
+            copies, key_slots = {}, {}
+            for i, use in sorted(conv.texture_use.items()):
+                if 1 not in use or max(use) < 2:
+                    continue
+                ttype, tflags, name = textures[i]
+                if ttype == 0:
+                    copy = name[:-4] + "k.blp"
+                    files[copy] = ("keytex", files[name][1])
+                    copies[i] = (0, tflags, copy)
+                    continue
+                free = [k for k in range(3) if k not in slots and k not in key_slots]
+                if not free:
+                    warnings.append("%s: texture %d is alpha-keyed and blended, and no skin slot is free "
+                                    "for a copy: left shredded" % (stem, i))
+                    continue
+                key_slots[free[0]] = ttype - 11
+                copies[i] = (11 + free[0], tflags, None)
+            if copies:
+                conv = converter()
+                if drawn is not None:
+                    conv.batch_textures(dict(geosets))
+                m2, skin = conv.convert(textures, dict(geosets), key_copies=copies)
+            for i, use in conv.texture_use.items():
+                ttype, _f, name = (textures + [copies[k] for k in sorted(copies)])[i]
+                if ttype == 0:
+                    texture_use[name] |= use
+                else:
+                    slot_use[key][ttype - 11] |= use
+            texture_key_slots[key] = key_slots
             errors, info = check(m2, skin)
             if errors:
                 sys.exit("%s fails the 3.3.5 checks: %s" % (stem, errors[:5]))
@@ -406,6 +551,9 @@ def main():
         row[5] = int(rd["CreatureModelAlpha"]) or 255
         override = [int(x) for x in l.get("textures", "").split(",") if x]
         for k in range(3):
+            if k in texture_key_slots[key]:
+                row[6 + k] = 0  # an alpha-key copy goes here, below
+                continue
             fd = override[k] if override else int(rd["TextureVariationFileDataID_%d" % k])
             if not fd and k in texture_slots[key]:
                 fd = slot_fallback[l["model"]].get(k, 0)
@@ -416,8 +564,14 @@ def main():
             if fd:
                 files["%s\\T%d.blp" % (folder, fd)] = ("tex", fd)
                 row[6 + k] = add_string(cdi_str, "T%d" % fd)
+                texture_use["%s\\T%d.blp" % (folder, fd)] |= slot_use[key][k]
             else:
                 row[6 + k] = 0
+        for k, src in texture_key_slots[key].items():
+            name = texture_names_of(row, cdi_str)[src]
+            if name:
+                files["%s\\%sk.blp" % (folder, name)] = ("keytex", int(name[1:]))
+                row[6 + k] = add_string(cdi_str, name + "k")
         row[9] = 0
         row[13] = 0
         row[14] = 0
@@ -428,12 +582,22 @@ def main():
     # Textures (top mips dropped above --max-texture).
     tex_dir = os.path.join(args.work, "textures")
     os.makedirs(tex_dir, exist_ok=True)
+    keyed = 0
     for name, (kind, src) in list(files.items()):
-        if kind == "tex":
+        if kind in ("tex", "keytex"):
             data = shrink_blp(casc(args.cache, src), args.max_texture)
-            p = os.path.join(tex_dir, "%d_%d.blp" % (src, args.max_texture))
+            use = texture_use.get(name, set())
+            stretch = kind == "keytex" or 1 in use
+            if stretch and kind == "tex" and max(use) >= 2:
+                warnings.append("%s: alpha-keyed by one model, blended by another: left shredded" % name)
+                stretch = False
+            if stretch:
+                data = key_alpha_blp(data)
+                keyed += 1
+            p = os.path.join(tex_dir, "%d_%d%s.blp" % (src, args.max_texture, "k" if stretch else ""))
             open(p, "wb").write(data)
             files[name] = ("file", p)
+    print("%d textures with alpha-key alpha" % keyed)
 
     # Models whose id the base client already uses (Reforged HD has 9511 and 9571) move past the
     # block, to the next ids free in both, so a rerun on the same base picks the same ids.
