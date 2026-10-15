@@ -123,6 +123,14 @@ A pack repo holds:
   | `template` | each kind of look and the stock CreatureDisplayInfo id it clones for sounds, blood, footprints and size |
   | `source` | where the looks come from, for the head of the generated SQL |
 
+  A pack that is a library of models, not looks for a window to pick from, has three more:
+
+  | Field | Meaning |
+  | --- | --- |
+  | `transmog` | `false`: no rows for mod-transmog-plus and no preview creatures, so the SQL is the DBC rows only (`preview_base`, `subname` and `sort_base` can then be left out) |
+  | `plain` | `true`: the new rows carry no sounds and no footprints, since hundreds of unlike models can't all sound like the one stock creature their kind clones |
+  | `archives` | each kind of look and the MPQ its models and textures go into; with `--data-dir`, those archives are written there and `--out` holds the two DBCs only, so the big archives don't change when another patch's DBC rows do. Two kinds can name the same archive |
+
 - The data file, tab-separated, one look per row: `display` (the 3.3.5 display id; never change
   one a player may have picked), `retail_display` (empty for a look the client already has: no
   model, only the SQL), `form` (the kind, a key of `template`), `tier` (the individual
