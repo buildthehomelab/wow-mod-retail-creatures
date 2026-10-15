@@ -83,6 +83,10 @@ MASK_WORDS = ("mask", "square_soft", "gradient")
 # row past it that a look uses is an HD pack's, and has to be given to the server too.
 STOCK_MAX_MODEL = 3440
 
+# The server's creaturemodeldata_dbc.ModelName is varchar(100): a longer model path stops its
+# database import, and the worldserver with it.
+MODEL_PATH_MAX = 100
+
 
 # --- DBC ---------------------------------------------------------------------------------------
 
@@ -364,7 +368,12 @@ def main():
             model_id = pack["first_model"] + len(variants)
             row = row_of(cmd_rows, row_of(cdi_rows, pack["template"][l["form"]])[1])
             row[0] = model_id
-            row[2] = add_string(cmd_str, "%s\\%s.mdx" % (folder, stem))
+            model_path = "%s\\%s.mdx" % (folder, stem)
+            if len(model_path) > MODEL_PATH_MAX:
+                sys.exit("%s is %d characters; the server's creaturemodeldata_dbc holds %d. Give the look "
+                         "a shorter model name or folder, or the pack a shorter root" % (
+                             model_path, len(model_path), MODEL_PATH_MAX))
+            row[2] = add_string(cmd_str, model_path)
             row[4] = f32(rm["ModelScale"] or 1)
             # Retail marks an unset collision size with -20000000: keep the stock model's then.
             if float(rm["CollisionWidth"]) >= 0 and float(rm["CollisionHeight"]) >= 0:
@@ -376,7 +385,7 @@ def main():
             for k in range(6):
                 row[17 + k] = f32(rm["GeoBox_%d" % k])
             cmd_rows.append(row)
-            new_cmd.append((row, "%s\\%s.mdx" % (folder, stem)))
+            new_cmd.append((row, model_path))
             variants[key] = (model_id, folder, stem)
             texture_slots[key] = slots
             print("%-34s %2d/%2d anims, %3d bones, %d batches" % (
