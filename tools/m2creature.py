@@ -185,6 +185,9 @@ class Converter:
         self.geosets = {}
         self.skipped_textures = set()
         self.mask_textures = set()  # texture indices that only shape another texture (see pick)
+        self.key_combo = {}  # texture index: texture lookup entry of its alpha-key copy (see convert)
+        self.tex_lookup_out = None  # the texture lookup the converted model gets
+        self.texture_use = {}  # texture index: blend modes of the batches drawing it, after convert
 
     def _fits(self, seq):
         """Every bone keyframe array of an external sequence lies inside its .anim data."""
@@ -319,12 +322,18 @@ class Converter:
         return bytes(buf[voff:voff + value_size])
 
     # --- model --------------------------------------------------------------------------
-    def convert(self, textures, geosets=None, materials_mask=0x1F):
+    def convert(self, textures, geosets=None, materials_mask=0x1F, key_copies=None):
         """textures: list of (type, flags, file name or None) replacing the retail texture list
         (None for creature skin slots 11-13). geosets: {group: variant} from retail
         CreatureDisplayInfoGeosetData (group = GeosetIndex + 1); the 3.3.5 client can't pick
-        creature geosets, so the chosen ones are baked in. Returns (m2 bytes, skin bytes)."""
+        creature geosets, so the chosen ones are baked in. key_copies: {texture index: (type,
+        flags, file name or None)}, a texture the alpha-key batches of that texture draw with
+        instead (added after the others), for a texture that blended batches draw too: see
+        ALPHA_KEY in build_patch.py. Returns (m2 bytes, skin bytes); texture_use then says
+        which blend modes draw each texture index.
+        """
         self.geosets = geosets or {}
+        key_copies = key_copies or {}
         m, b, h = self.m, self.blob, {}
         nm = (self.name + "\0").encode()
         h["name"] = b.add(nm, len(nm))
@@ -364,6 +373,13 @@ class Converter:
         # A texture type 3.3.5 can't fill (None) gets a placeholder; its batches are skipped.
         self.skipped_textures = {i for i, t in enumerate(textures) if t[0] is None}
         textures = [(0, t[1], "Textures\\ShaneCube.blp") if t[0] is None else t for t in textures]
+        tex_lookup = [x[0] for x in m.arr("texture_lookup", "<h")]
+        self.key_combo = {}
+        for i in sorted(key_copies):
+            self.key_combo[i] = len(tex_lookup)
+            tex_lookup.append(len(textures))
+            textures.append(key_copies[i])
+        self.tex_lookup_out = tex_lookup
         names = []
         for ttype, tflags, path in textures:
             if path:
@@ -382,7 +398,7 @@ class Converter:
         skin, extra_lookup = self.convert_skin()
         lookup = [x[0] for x in m.arr("bone_lookup", "<H")] + extra_lookup
         h["bone_lookup"] = b.add(struct.pack("<%dH" % len(lookup), *lookup), len(lookup))
-        h["texture_lookup"] = self.copy("texture_lookup", 2)
+        h["texture_lookup"] = b.add(struct.pack("<%dh" % len(tex_lookup), *tex_lookup), len(tex_lookup))
         h["texunit_lookup"] = b.add(struct.pack("<h", 0), 1)
         h["weight_lookup"] = self.copy("weight_lookup", 2)
         h["transform_lookup"] = self.copy("transform_lookup", 2)
@@ -612,6 +628,9 @@ class Converter:
         batches = b""
         nb = 0
         transforms = self.m.h["transform_lookup"][0]
+        tex_lookup = self.tex_lookup_out or [x[0] for x in self.m.arr("texture_lookup", "<h")]
+        materials = self.m.arr("materials", "<HH")
+        self.texture_use = {}
         for bt in drawn:
             (flags, prio, shader, sub, geoset, color, mat, layer, count, tex_combo,
              uv_combo, weight_combo, transform_combo) = bt
@@ -619,6 +638,13 @@ class Converter:
                 tex_combo += 1
                 if transform_combo + 1 < transforms:
                     transform_combo += 1
+            blend = materials[mat][1]
+            blend = blend if blend <= 6 else 4
+            tex = tex_lookup[tex_combo]
+            if blend == 1 and tex in self.key_combo:
+                tex_combo = self.key_combo[tex]
+                tex = tex_lookup[tex_combo]
+            self.texture_use.setdefault(tex, set()).add(blend)
             for piece in sub_map[sub]:
                 batches += struct.pack("<BbHHHhHHHHHHH", flags, prio, 0, piece, piece, color, mat, 0, 1,
                                        tex_combo, 0, weight_combo, transform_combo)
