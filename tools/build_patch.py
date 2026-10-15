@@ -32,9 +32,10 @@ import os
 import struct
 import sys
 
+import fetch
 from check_m2 import check
 from fetch import casc, db2, db2_rows, listfile
-from m2creature import Converter, Retail
+from m2creature import Converter, Retail, Skin, StaleSkin, skin_mismatches
 
 # A pack's pack.json: its data file, where its models go in the client, its id blocks and the
 # stock display each kind of look clones for sounds, blood, footprints and size class.
@@ -309,6 +310,24 @@ def load_looks(pack):
     return [dict(zip(head, l.split("\t"))) for l in lines[1:]]
 
 
+def load_model(cache, fdid, stem, warnings):
+    """A retail model with its skin and animations. wago.tools sometimes serves a skin made for
+    another version of the model (it mixes builds); such a model is taken from Blizzard's CDN
+    instead, model, skin and animations together, since they have to come from one build."""
+    for source in (None, "cdn"):
+        raw = casc(cache, fdid, source)
+        m = Retail(raw)
+        skin_raw = casc(cache, m.sfid[0], source)
+        if not skin_mismatches(m, Skin(skin_raw)):
+            break
+        if source == "cdn" or fetch.SOURCE == "cdn":
+            raise StaleSkin("%s: the skin was made for another version of the model" % stem)
+        warnings.append("%s: wago.tools served a skin made for another version of the model: "
+                        "model, skin and animations taken from Blizzard's CDN" % stem)
+    anims = {(a, s): casc(cache, f, source) for a, s, f in m.afid if f}
+    return raw, m, skin_raw, anims
+
+
 def folder_name(model):
     return "".join(p[:1].upper() + p[1:] for p in model.split("_"))
 
@@ -428,13 +447,10 @@ def main():
         folder = "%s\\%s" % (pack["root"], l.get("folder") or folder_name(l["model"]))
         key = (fdid, geosets)
         if key not in variants:
-            raw = casc(args.cache, fdid)
-            m = Retail(raw)
-            anims = {(a, s): casc(args.cache, f) for a, s, f in m.afid if f}
             stem = folder_name(l["model"])
             if any(k[0] == fdid for k in variants):
                 stem += "_" + hashlib.md5(repr(geosets).encode()).hexdigest()[:6]
-            skin_raw = casc(args.cache, m.sfid[0])
+            raw, m, skin_raw, anims = load_model(args.cache, fdid, stem, warnings)
 
             def converter():
                 c = Converter(raw, skin_raw, anims, valid, stem)
