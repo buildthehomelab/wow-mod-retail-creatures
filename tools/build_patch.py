@@ -444,12 +444,15 @@ def main():
         rm = cmd_r[rd["ModelID"]]
         fdid = int(rm["FileDataID"])
         geosets = tuple(sorted(geo.get(l["retail_display"], {}).items()))
+        # Meshes drawn with these retail textures are left out (a mount's saddle, for a look
+        # without it): retail draws them always, they're no geoset the client could hide.
+        hide = tuple(sorted({int(x) for x in l.get("hide", "").split(",") if x}))
         folder = "%s\\%s" % (pack["root"], l.get("folder") or folder_name(l["model"]))
-        key = (fdid, geosets)
+        key = (fdid, geosets, hide)
         if key not in variants:
             stem = folder_name(l["model"])
             if any(k[0] == fdid for k in variants):
-                stem += "_" + hashlib.md5(repr(geosets).encode()).hexdigest()[:6]
+                stem += "_" + hashlib.md5(repr((geosets, hide) if hide else geosets).encode()).hexdigest()[:6]
             raw, m, skin_raw, anims = load_model(args.cache, fdid, stem, warnings)
 
             def converter():
@@ -459,10 +462,17 @@ def main():
                         w in os.path.basename(texture_names.get(fd, "")) for w in MASK_WORDS)}
                 return c
 
+            missing = set(hide) - set(m.txid)
+            if missing:
+                sys.exit("%d %s: hide names textures the model doesn't have: %s" % (
+                    display, l["name"], ", ".join(map(str, sorted(missing)))))
             conv = converter()
             drawn = conv.batch_textures(dict(geosets)) if pack["prune_textures"] else None
             textures, slots = [], set()
             for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
+                if i < len(m.txid) and m.txid[i] in hide:
+                    textures.append((None, tflags, None))  # not drawn: its meshes go
+                    continue
                 if drawn is not None and i not in drawn:
                     textures.append((None, tflags, None))  # only particles or extra passes used it
                     continue
