@@ -34,7 +34,7 @@ import sys
 
 import fetch
 from check_m2 import check
-from fetch import casc, db2, db2_rows, listfile
+from fetch import casc, customization_textures, db2, db2_rows, listfile
 from m2creature import Converter, Retail, Skin, StaleSkin, skin_mismatches
 
 # A pack's pack.json: its data file, where its models go in the client, its id blocks and the
@@ -360,6 +360,7 @@ def main():
     geo = collections.defaultdict(dict)
     for g in db2_rows(args.cache, "CreatureDisplayInfoGeosetData"):
         geo[g["CreatureDisplayInfoID"]][int(g["GeosetIndex"]) + 1] = int(g["GeosetValue"])
+    custom = customization_textures(args.cache)
 
     valid = {r[0] for r in read_dbc(os.path.join(args.dbc, "AnimationData.dbc"))[0]}
     cdi_rows, cdi_str, cdi_fields = read_dbc(os.path.join(args.dbc, "CreatureDisplayInfo.dbc"))
@@ -400,7 +401,7 @@ def main():
 
     files = {}  # archive name -> source path
     folder_kind = {}  # a model's folder -> the kind of the first look on it (which archive it goes to)
-    variants = {}  # (fdid, geosets) -> (model id, folder, stem)
+    variants = {}  # (fdid, geosets, hide, chosen textures) -> (model id, folder, stem)
     texture_slots = {}
     texture_use = collections.defaultdict(set)  # texture file: blend modes drawing it
     slot_use = collections.defaultdict(lambda: collections.defaultdict(set))  # model key: {slot: modes}
@@ -448,11 +449,14 @@ def main():
         # without it): retail draws them always, they're no geoset the client could hide.
         hide = tuple(sorted({int(x) for x in l.get("hide", "").split(",") if x}))
         folder = "%s\\%s" % (pack["root"], l.get("folder") or folder_name(l["model"]))
-        key = (fdid, geosets, hide)
+        # A customizable mount's body textures come from its customization choices (see fetch.py).
+        chosen = custom.get(l["retail_display"], {})
+        key = (fdid, geosets, hide, tuple(sorted(chosen.items())))
         if key not in variants:
             stem = folder_name(l["model"])
             if any(k[0] == fdid for k in variants):
-                stem += "_" + hashlib.md5(repr((geosets, hide) if hide else geosets).encode()).hexdigest()[:6]
+                stem += "_" + hashlib.md5(repr(key if key[3] else (geosets, hide) if hide else geosets)
+                                          .encode()).hexdigest()[:6]
             raw, m, skin_raw, anims = load_model(args.cache, fdid, stem, warnings)
 
             def converter():
@@ -470,6 +474,7 @@ def main():
             drawn = conv.batch_textures(dict(geosets)) if pack["prune_textures"] else None
             textures, slots = [], set()
             for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
+                fd = (m.txid[i] if i < len(m.txid) else 0) or chosen.get(ttype, 0)
                 if i < len(m.txid) and m.txid[i] in hide:
                     textures.append((None, tflags, None))  # not drawn: its meshes go
                     continue
@@ -477,13 +482,11 @@ def main():
                     textures.append((None, tflags, None))  # only particles or extra passes used it
                     continue
                 if ttype not in (0, 11, 12, 13):
-                    fd = m.txid[i] if i < len(m.txid) else 0
                     if not fd:
                         textures.append((None, tflags, None))  # a retail-only texture slot: not drawn
                         continue
                     ttype = 0
                 if ttype == 0:
-                    fd = m.txid[i] if i < len(m.txid) else 0
                     if not fd:
                         textures.append((0, tflags, "Textures\\ShaneCube.blp"))
                         warnings.append("%s: texture %d has no file" % (stem, i))

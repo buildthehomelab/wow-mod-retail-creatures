@@ -29,7 +29,7 @@ from PIL import Image
 
 from census import read_dbc_ids
 from contact_sheet import LIGHT, blp_reader, camera, convert_variant, draw_raw, drawn_batches, look_textures
-from fetch import db2_rows, listfile
+from fetch import customization_textures, db2_rows, listfile
 
 AZIMUTH = 40.0  # contact_sheet.py's angle for frame 0
 
@@ -87,9 +87,9 @@ def turntable(model, textures, frames, width, height, elevation, scale=2):
 
 
 def render_look(job):
-    cache, valid, out, fdid, geosets, stem, display, tex, fallback, frames, width, height, elevation, texture = job
+    cache, valid, out, fdid, geosets, stem, chosen, display, tex, fallback, frames, width, height, elevation, texture = job
     try:
-        model, fixed = convert_variant(cache, valid, fdid, geosets, stem)
+        model, fixed = convert_variant(cache, valid, fdid, geosets, stem, chosen)
         use, note = look_textures(model, fixed, tex, fallback, blp_reader(cache, texture))
         strip = turntable(model, use, frames, width, height, elevation)
         Image.fromarray(strip, "RGBA").save(os.path.join(out, "%s.webp" % display), quality=90, alpha_quality=100,
@@ -122,6 +122,7 @@ def main():
     geo = collections.defaultdict(dict)
     for g in db2_rows(args.cache, "CreatureDisplayInfoGeosetData"):
         geo[g["CreatureDisplayInfoID"]][int(g["GeosetIndex"]) + 1] = int(g["GeosetValue"])
+    custom = customization_textures(args.cache)
     models = json.load(open(os.path.join(args.census, "models.json")))
     only = {d.strip() for d in args.only.split(",") if d.strip()}
 
@@ -142,7 +143,8 @@ def main():
             print("%s: not a converted look (%s)" % (display, status))
             continue
         jobs.append((args.cache, valid, args.out, int(fdid), tuple(sorted(geo.get(display, {}).items())),
-                     os.path.basename(path)[:-3], display, [int(t) for t in tex.split(",")][:3], fallback[fdid],
+                     os.path.basename(path)[:-3], tuple(sorted(custom.get(display, {}).items())), display,
+                     [int(t) for t in tex.split(",")][:3], fallback[fdid],
                      args.frames, args.width, args.height, args.elevation, args.texture))
     # Displays the census doesn't list (not a journal mount or pet: another skin of a model it
     # has) are read from the retail tables, when the census converted their model.
@@ -160,7 +162,7 @@ def main():
                 continue
             path = listfile(args.cache, [fdid]).get(int(fdid), "%s.m2" % fdid)
             jobs.append((args.cache, valid, args.out, int(fdid), tuple(sorted(geo.get(display, {}).items())),
-                         os.path.basename(path)[:-3], display,
+                         os.path.basename(path)[:-3], tuple(sorted(custom.get(display, {}).items())), display,
                          [int(row["TextureVariationFileDataID_%d" % k]) for k in range(3)], fallback[fdid],
                          args.frames, args.width, args.height, args.elevation, args.texture))
     for display in sorted(missing):
