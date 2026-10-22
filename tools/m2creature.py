@@ -88,7 +88,10 @@ class Skin:
             raise ValueError("not a skin file")
         self.data = data
         a = [struct.unpack_from("<II", data, 4 + i * 8) for i in range(5)]
-        self.vmap = self._arr(a[0], "<H")
+        # Where the skin's vertices start in the model's: 0 on skin 0; a lower-detail skin
+        # draws its own vertices, stored after those of the skins before it.
+        start = struct.unpack_from("<I", data, 44)[0]
+        self.vmap = [start + v for v in self._arr(a[0], "<H")]
         self.indices = self._arr(a[1], "<H")
         self.bones = self.data[a[2][1]:a[2][1] + 4 * a[2][0]]
         self.submeshes = self._arr(a[3], "<HHHHHHHHHH3f3ff")
@@ -103,6 +106,11 @@ class Skin:
 
 class StaleSkin(ValueError):
     """The skin was made for another version of the model (wago.tools mixes builds)."""
+
+
+class SkinOverflow(ValueError):
+    """The mesh drawn needs more than the 16 bits a 3.3.5 skin counts in. Retail lists
+    lower-detail skins after skin 0 (SFID); callers try the next one."""
 
 
 def skin_mismatches(model, skin):
@@ -581,12 +589,13 @@ class Converter:
         sk = self.skin
         lookup = [x[0] for x in self.m.arr("bone_lookup", "<H")]
         verts = self.m.arr("vertices", "<12x4B4B28x")
+        if len(sk.vmap) > 0x10000:  # indices are 16 bits, so a vertex start can't carry into Level
+            raise SkinOverflow("%s: the retail skin has %d vertices" % (self.name, len(sk.vmap)))
         vmap, idx, bones, subs, extra, sub_map = [], [], bytearray(), [], [], {}
         for si in sorted({bt[3] for bt in batches}):
             sub = sk.submeshes[si]
-            if sub[1]:
-                raise ValueError("%s: submesh Level %d not supported" % (self.name, sub[1]))
-            tris = [sk.indices[sub[4] + 3 * t:sub[4] + 3 * t + 3] for t in range(sub[5] // 3)]
+            start = sub[4] + (sub[1] << 16)  # Level: the high bits of a big skin's index start
+            tris = [sk.indices[start + 3 * t:start + 3 * t + 3] for t in range(sub[5] // 3)]
             if sub[6] <= MAX_PALETTE:
                 groups = [(tris, None)]
             else:
@@ -606,6 +615,7 @@ class Converter:
             sub_map[si] = []
             for tris_g, used in groups:
                 piece = list(sub)
+                piece[1] = 0  # Level: the rebuilt skin starts every submesh within 16 bits
                 if used is None:
                     pos = None
                 else:
@@ -631,8 +641,10 @@ class Converter:
                 subs.append(piece)
                 sub_map[si].append(len(subs) - 1)
         if len(vmap) > 0xFFFF or len(idx) > 0xFFFF:
-            raise ValueError("%s: the skin overflows 16 bits (%d vertices, %d indices)"
-                             % (self.name, len(vmap), len(idx)))
+            raise SkinOverflow("%s: the skin overflows 16 bits (%d vertices, %d indices)"
+                               % (self.name, len(vmap), len(idx)))
+        if vmap and max(vmap) > 0xFFFF:
+            raise SkinOverflow("%s: the skin draws vertex %d, past 16 bits" % (self.name, max(vmap)))
         return vmap, idx, bytes(bones), subs, sub_map, extra
 
     def convert_skin(self):

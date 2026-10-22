@@ -39,7 +39,7 @@ from PIL import Image
 from build_patch import MASK_WORDS
 from census import read_dbc_ids
 from fetch import casc, customization_textures, db2_rows, listfile
-from m2creature import ARRAYS, Converter, Retail
+from m2creature import ARRAYS, Converter, Retail, SkinOverflow
 
 PET_TYPES = ("Humanoid", "Dragonkin", "Flying", "Undead", "Critter", "Magic", "Elemental", "Beast", "Aquatic",
              "Mechanical")
@@ -373,21 +373,27 @@ def convert_variant(cache, valid, fdid, geosets, stem, chosen=()):
                 anims[(a, s)] = casc(cache, f)
             except Exception:
                 pass
-    conv = Converter(raw, casc(cache, m.sfid[0]), anims, valid, stem)
     names = listfile(cache, m.txid)
-    conv.mask_textures = {i for i, fd in enumerate(m.txid)
-                          if any(w in os.path.basename(names.get(fd, "")) for w in MASK_WORDS)}
-    drawn = conv.batch_textures(dict(geosets))
-    textures = []
-    for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
-        fd = (m.txid[i] if i < len(m.txid) else 0) or dict(chosen).get(ttype, 0)
-        if i not in drawn or (ttype not in (11, 12, 13) and not fd):
-            textures.append((None, tflags, None))
-        elif ttype in (11, 12, 13):
-            textures.append((ttype, tflags, None))
-        else:
-            textures.append((0, tflags, "T%d.blp" % fd))
-    m2, skin = conv.convert(textures, dict(geosets))
+    for lod, skin_id in enumerate(m.sfid):  # skin 0, or a lower-detail one when it overflows
+        conv = Converter(raw, casc(cache, skin_id), anims, valid, stem)
+        conv.mask_textures = {i for i, fd in enumerate(m.txid)
+                              if any(w in os.path.basename(names.get(fd, "")) for w in MASK_WORDS)}
+        drawn = conv.batch_textures(dict(geosets))
+        textures = []
+        for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
+            fd = (m.txid[i] if i < len(m.txid) else 0) or dict(chosen).get(ttype, 0)
+            if i not in drawn or (ttype not in (11, 12, 13) and not fd):
+                textures.append((None, tflags, None))
+            elif ttype in (11, 12, 13):
+                textures.append((ttype, tflags, None))
+            else:
+                textures.append((0, tflags, "T%d.blp" % fd))
+        try:
+            m2, skin = conv.convert(textures, dict(geosets))
+            break
+        except SkinOverflow:
+            if lod + 1 == len(m.sfid):
+                raise
     model = Model(m2, skin)
     fixed = {}
     for i, (ttype, tflags, _n, _o) in enumerate(model.textures):

@@ -35,7 +35,7 @@ import sys
 import fetch
 from check_m2 import check
 from fetch import casc, customization_textures, db2, db2_rows, listfile
-from m2creature import Converter, Retail, Skin, StaleSkin, skin_mismatches
+from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, skin_mismatches
 
 # A pack's pack.json: its data file, where its models go in the client, its id blocks and the
 # stock display each kind of look clones for sounds, blood, footprints and size class.
@@ -311,9 +311,10 @@ def load_looks(pack):
 
 
 def load_model(cache, fdid, stem, warnings):
-    """A retail model with its skin and animations. wago.tools sometimes serves a skin made for
-    another version of the model (it mixes builds); such a model is taken from Blizzard's CDN
-    instead, model, skin and animations together, since they have to come from one build."""
+    """A retail model with its skins and animations: skins(n) is skin n (retail lists
+    lower-detail skins after skin 0). wago.tools sometimes serves a skin made for another
+    version of the model (it mixes builds); such a model is taken from Blizzard's CDN instead,
+    model, skins and animations together, since they have to come from one build."""
     for source in (None, "cdn"):
         raw = casc(cache, fdid, source)
         m = Retail(raw)
@@ -325,7 +326,7 @@ def load_model(cache, fdid, stem, warnings):
         warnings.append("%s: wago.tools served a skin made for another version of the model: "
                         "model, skin and animations taken from Blizzard's CDN" % stem)
     anims = {(a, s): casc(cache, f, source) for a, s, f in m.afid if f}
-    return raw, m, skin_raw, anims
+    return raw, m, lambda n: casc(cache, m.sfid[n], source) if n else skin_raw, anims
 
 
 def folder_name(model):
@@ -457,10 +458,11 @@ def main():
             if any(k[0] == fdid for k in variants):
                 stem += "_" + hashlib.md5(repr(key if key[3] else (geosets, hide) if hide else geosets)
                                           .encode()).hexdigest()[:6]
-            raw, m, skin_raw, anims = load_model(args.cache, fdid, stem, warnings)
+            raw, m, skins, anims = load_model(args.cache, fdid, stem, warnings)
+            lod = 0
 
             def converter():
-                c = Converter(raw, skin_raw, anims, valid, stem)
+                c = Converter(raw, skins(lod), anims, valid, stem)
                 if pack["prune_textures"]:
                     c.mask_textures = {i for i, fd in enumerate(m.txid) if any(
                         w in os.path.basename(texture_names.get(fd, "")) for w in MASK_WORDS)}
@@ -470,35 +472,48 @@ def main():
             if missing:
                 sys.exit("%d %s: hide names textures the model doesn't have: %s" % (
                     display, l["name"], ", ".join(map(str, sorted(missing)))))
-            conv = converter()
-            drawn = conv.batch_textures(dict(geosets)) if pack["prune_textures"] else None
-            textures, slots = [], set()
-            for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
-                fd = (m.txid[i] if i < len(m.txid) else 0) or chosen.get(ttype, 0)
-                if i < len(m.txid) and m.txid[i] in hide:
-                    textures.append((None, tflags, None))  # not drawn: its meshes go
-                    continue
-                if drawn is not None and i not in drawn:
-                    textures.append((None, tflags, None))  # only particles or extra passes used it
-                    continue
-                if ttype not in (0, 11, 12, 13):
-                    if not fd:
-                        textures.append((None, tflags, None))  # a retail-only texture slot: not drawn
+            # Skin 0 unless the mesh drawn overflows it: then the next, lower-detail skin.
+            while True:
+                conv = converter()
+                drawn = conv.batch_textures(dict(geosets)) if pack["prune_textures"] else None
+                textures, slots, tex_files, tex_warnings = [], set(), {}, []
+                for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
+                    fd = (m.txid[i] if i < len(m.txid) else 0) or chosen.get(ttype, 0)
+                    if i < len(m.txid) and m.txid[i] in hide:
+                        textures.append((None, tflags, None))  # not drawn: its meshes go
                         continue
-                    ttype = 0
-                if ttype == 0:
-                    if not fd:
-                        textures.append((0, tflags, "Textures\\ShaneCube.blp"))
-                        warnings.append("%s: texture %d has no file" % (stem, i))
+                    if drawn is not None and i not in drawn:
+                        textures.append((None, tflags, None))  # only particles or extra passes used it
                         continue
-                    name = "%s\\T%d.blp" % (folder, fd)
-                    files[name] = ("tex", fd)
-                    textures.append((0, tflags, name))
-                else:
-                    textures.append((ttype, tflags, None))
-                    if 11 <= ttype <= 13:
-                        slots.add(ttype - 11)
-            m2, skin = conv.convert(textures, dict(geosets))
+                    if ttype not in (0, 11, 12, 13):
+                        if not fd:
+                            textures.append((None, tflags, None))  # a retail-only texture slot: not drawn
+                            continue
+                        ttype = 0
+                    if ttype == 0:
+                        if not fd:
+                            textures.append((0, tflags, "Textures\\ShaneCube.blp"))
+                            tex_warnings.append("%s: texture %d has no file" % (stem, i))
+                            continue
+                        name = "%s\\T%d.blp" % (folder, fd)
+                        tex_files[name] = ("tex", fd)
+                        textures.append((0, tflags, name))
+                    else:
+                        textures.append((ttype, tflags, None))
+                        if 11 <= ttype <= 13:
+                            slots.add(ttype - 11)
+                try:
+                    m2, skin = conv.convert(textures, dict(geosets))
+                    break
+                except SkinOverflow as e:
+                    if lod + 1 == len(m.sfid):
+                        raise
+                    lod += 1
+                    overflow = e
+            files.update(tex_files)
+            warnings += tex_warnings
+            if lod:
+                warnings.append("%s; drawn from the retail skin %d" % (overflow, lod))
             # A texture alpha-key and blended batches both draw: the alpha-key ones get a copy
             # (see ALPHA_KEY), in a free creature skin slot when the texture is a slot's.
             copies, key_slots = {}, {}
