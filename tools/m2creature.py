@@ -581,12 +581,13 @@ class Converter:
         sk = self.skin
         lookup = [x[0] for x in self.m.arr("bone_lookup", "<H")]
         verts = self.m.arr("vertices", "<12x4B4B28x")
+        if len(sk.vmap) > 0x10000:  # indices are 16 bits, so a vertex start can't carry into Level
+            raise ValueError("%s: the retail skin has %d vertices" % (self.name, len(sk.vmap)))
         vmap, idx, bones, subs, extra, sub_map = [], [], bytearray(), [], [], {}
         for si in sorted({bt[3] for bt in batches}):
             sub = sk.submeshes[si]
-            if sub[1]:
-                raise ValueError("%s: submesh Level %d not supported" % (self.name, sub[1]))
-            tris = [sk.indices[sub[4] + 3 * t:sub[4] + 3 * t + 3] for t in range(sub[5] // 3)]
+            start = sub[4] + (sub[1] << 16)  # Level: the high bits of a big skin's index start
+            tris = [sk.indices[start + 3 * t:start + 3 * t + 3] for t in range(sub[5] // 3)]
             if sub[6] <= MAX_PALETTE:
                 groups = [(tris, None)]
             else:
@@ -606,6 +607,7 @@ class Converter:
             sub_map[si] = []
             for tris_g, used in groups:
                 piece = list(sub)
+                piece[1] = 0  # Level: the rebuilt skin starts every submesh within 16 bits
                 if used is None:
                     pos = None
                 else:

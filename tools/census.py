@@ -130,7 +130,7 @@ def probe(cache, fdid, valid, display_textures):
         r["result"] = "ok" if not errors else "check: %s" % str(errors[0])[:80]
     except Exception as e:
         msg = str(e) or type(e).__name__
-        for key in ("submesh Level", "overflows 16 bits", "track with"):
+        for key in ("retail skin has", "overflows 16 bits", "track with"):
             if key in msg:
                 msg = key
         r["result"] = unavailable(e) if isinstance(e, (KeyError, Encrypted)) else "convert: %s" % msg[:80]
