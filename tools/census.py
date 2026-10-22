@@ -24,7 +24,7 @@ import zlib
 from build_patch import shrink_blp
 from check_m2 import check
 from fetch import casc, db2, db2_rows, listfile
-from m2creature import ARRAYS, Converter, Retail, chunks
+from m2creature import ARRAYS, Converter, Retail, SkinOverflow, chunks
 from tact import Encrypted
 
 PET_HIDDEN = 0x20  # BattlePetSpecies.Flags: not in the pet journal
@@ -92,7 +92,6 @@ def probe(cache, fdid, valid, display_textures):
         return r
     try:
         m = Retail(raw)
-        skin = casc(cache, m.sfid[0])
         anims, lost = {}, 0
         for a, s, f in m.afid:
             if f and a in valid:
@@ -100,21 +99,27 @@ def probe(cache, fdid, valid, display_textures):
                     anims[(a, s)] = casc(cache, f)
                 except Exception:
                     lost += 1
-        conv = Converter(raw, skin, anims, valid, "census")
-        drawn = conv.batch_textures({})
-        textures, tex = [], set(display_textures)
-        for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
-            if ttype in (11, 12, 13):
-                textures.append((ttype, tflags, None))
-            elif i in drawn and i < len(m.txid) and m.txid[i]:
-                textures.append((0, tflags, "Creature\\Census\\T%d.blp" % m.txid[i]))
-                tex.add(m.txid[i])
-            else:
-                textures.append((None, tflags, None))
-        m2, sk = conv.convert(textures, {})
+        for lod, skin_id in enumerate(m.sfid):  # skin 0, or a lower-detail one when it overflows
+            conv = Converter(raw, casc(cache, skin_id), anims, valid, "census")
+            drawn = conv.batch_textures({})
+            textures, tex = [], set(display_textures)
+            for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
+                if ttype in (11, 12, 13):
+                    textures.append((ttype, tflags, None))
+                elif i in drawn and i < len(m.txid) and m.txid[i]:
+                    textures.append((0, tflags, "Creature\\Census\\T%d.blp" % m.txid[i]))
+                    tex.add(m.txid[i])
+                else:
+                    textures.append((None, tflags, None))
+            try:
+                m2, sk = conv.convert(textures, {})
+                break
+            except SkinOverflow:
+                if lod + 1 == len(m.sfid):
+                    raise
         errors, info = check(m2, sk)
         kept = {conv.seqs[i][0] for i in conv.kept}
-        r.update(batches=info.get("batches"), known_anims=len({s[0] for s in conv.seqs if s[0] in valid}),
+        r.update(skin=lod, batches=info.get("batches"), known_anims=len({s[0] for s in conv.seqs if s[0] in valid}),
                  kept_anims=len(kept), no_basic=[a for a in (0, 4, 5) if a not in kept],
                  stale_anims=len(set(conv.dropped)), lost_anims=lost, bad_tracks=conv.bad_tracks,
                  out_bytes=len(m2) + len(sk), out_packed=len(zlib.compress(m2)) + len(zlib.compress(sk)),
@@ -130,7 +135,7 @@ def probe(cache, fdid, valid, display_textures):
         r["result"] = "ok" if not errors else "check: %s" % str(errors[0])[:80]
     except Exception as e:
         msg = str(e) or type(e).__name__
-        for key in ("retail skin has", "overflows 16 bits", "track with"):
+        for key in ("retail skin has", "overflows 16 bits", "past 16 bits", "track with"):
             if key in msg:
                 msg = key
         r["result"] = unavailable(e) if isinstance(e, (KeyError, Encrypted)) else "convert: %s" % msg[:80]
@@ -265,7 +270,7 @@ def main():
                 print("  probed %d/%d" % (n, len(futs)), flush=True)
     json.dump(results, open(os.path.join(args.out, "models.json"), "w"))
     cols = ("result", "version", "vertices", "bones", "sequences", "known_anims", "kept_anims", "no_basic",
-            "anims", "stale_anims", "lost_anims", "particles", "ribbons", "lights", "textures", "batches",
+            "anims", "stale_anims", "lost_anims", "particles", "ribbons", "lights", "textures", "skin", "batches",
             "m2_bytes", "out_bytes", "out_packed", "chunks")
     with open(os.path.join(args.out, "models.tsv"), "w", encoding="utf-8") as f:
         f.write("model_fdid\tmodel\tmounts\tpets\tdisplays\tfourth_texture\tgeoset_displays\t" + "\t".join(cols) + "\n")
