@@ -7,6 +7,7 @@ pinned retail build. wago.tools pins nothing: of 60 files compared on 2026-10-12
 the live retail build's copy, and six models came with a skin made for another version of
 them. The two sources keep separate caches (<cache>/casc and <cache>/cdn), so they never mix.
 """
+import collections
 import csv
 import io
 import os
@@ -98,4 +99,49 @@ def listfile(cache, wanted, prefixes=None):
             i, _, p = line.rstrip("\n").partition(";")
             if i in wanted or (prefixes and p.startswith(prefixes)):
                 out[int(i)] = p
+    return out
+
+
+def customization_textures(cache):
+    """{retail display: {texture type: file id}} for displays that are a ChrModel (a customizable
+    mount like the Steel Prototype Panther MK-0). Their model leaves its body texture (type 1)
+    without a file, and the display names none: retail fills it from the model's customization
+    options, each set to its first choice. Creature skin slots (types 11-13) are left out: those
+    come from the display."""
+    models = {r["ID"]: r for r in db2_rows(cache, "ChrModel")}
+    layer_type = {}  # (texture layout, texture target): texture type, lowest layer first
+    for r in sorted(db2_rows(cache, "ChrModelTextureLayer"), key=lambda r: int(r["Layer"])):
+        for k in range(2):
+            target = r["ChrModelTextureTargetID_%d" % k]
+            if target != "0":
+                layer_type.setdefault((r["CharComponentTextureLayoutsID"], target), int(r["TextureType"]))
+    model_of = {o["ID"]: o["ChrModelID"] for o in db2_rows(cache, "ChrCustomizationOption")
+                if o["ChrModelID"] in models}
+    first = {}  # option: its first choice
+    for c in db2_rows(cache, "ChrCustomizationChoice"):
+        o = c["ChrCustomizationOptionID"]
+        if o in model_of and (o not in first or int(c["OrderIndex"]) < int(first[o]["OrderIndex"])):
+            first[o] = c
+    chosen = {c["ID"]: model_of[o] for o, c in first.items()}
+    material_of = collections.defaultdict(list)  # ChrModel: its chosen materials
+    for e in db2_rows(cache, "ChrCustomizationElement"):
+        related = e["RelatedChrCustomizationChoiceID"]
+        if e["ChrCustomizationChoiceID"] in chosen and e["ChrCustomizationMaterialID"] != "0" \
+                and (related == "0" or related in chosen):
+            material_of[chosen[e["ChrCustomizationChoiceID"]]].append(e["ChrCustomizationMaterialID"])
+    if not material_of:
+        return {}
+    materials = db2(cache, "ChrCustomizationMaterial")
+    texture_of = {}
+    for t in db2_rows(cache, "TextureFileData"):
+        texture_of.setdefault(t["MaterialResourcesID"], int(t["FileDataID"]))
+    out = {}
+    for model_id, mats in material_of.items():
+        model = models[model_id]
+        for mat in mats:
+            m = materials.get(mat)
+            ttype = m and layer_type.get((model["CharComponentTextureLayoutID"], m["ChrModelTextureTargetID"]))
+            fd = m and texture_of.get(m["MaterialResourcesID"])
+            if ttype and fd and not 11 <= ttype <= 13:
+                out.setdefault(model["DisplayID"], {}).setdefault(ttype, fd)
     return out

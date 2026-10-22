@@ -38,7 +38,7 @@ from PIL import Image
 
 from build_patch import MASK_WORDS
 from census import read_dbc_ids
-from fetch import casc, db2_rows, listfile
+from fetch import casc, customization_textures, db2_rows, listfile
 from m2creature import ARRAYS, Converter, Retail, SkinOverflow
 
 PET_TYPES = ("Humanoid", "Dragonkin", "Flying", "Undead", "Critter", "Magic", "Elemental", "Beast", "Aquatic",
@@ -360,8 +360,9 @@ def draw_raw(model, textures, px, azimuth, elevation, mid, span, light, backgrou
 
 # --- the census's looks ------------------------------------------------------------------------
 
-def convert_variant(cache, valid, fdid, geosets, stem):
-    """Converts one retail model with one geoset choice the way build_patch.py does. Returns the
+def convert_variant(cache, valid, fdid, geosets, stem, chosen=()):
+    """Converts one retail model with one geoset choice the way build_patch.py does (chosen:
+    the display's customization textures, as (texture type, file id) pairs). Returns the
     posed 3.3.5a model and {texture index: (file id, flags)} for its fixed (non-look) textures."""
     raw = casc(cache, fdid)
     m = Retail(raw)
@@ -380,7 +381,7 @@ def convert_variant(cache, valid, fdid, geosets, stem):
         drawn = conv.batch_textures(dict(geosets))
         textures = []
         for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
-            fd = m.txid[i] if i < len(m.txid) else 0
+            fd = (m.txid[i] if i < len(m.txid) else 0) or dict(chosen).get(ttype, 0)
             if i not in drawn or (ttype not in (11, 12, 13) and not fd):
                 textures.append((None, tflags, None))
             elif ttype in (11, 12, 13):
@@ -440,10 +441,10 @@ def blp_reader(cache, target=256):
 
 def render_variant(job):
     """One model with one geoset choice: convert it, then draw each of its looks."""
-    cache, valid, out, fdid, geosets, stem, looks, fallback = job
+    cache, valid, out, fdid, geosets, stem, chosen, looks, fallback = job
     done = []
     try:
-        model, fixed = convert_variant(cache, valid, fdid, geosets, stem)
+        model, fixed = convert_variant(cache, valid, fdid, geosets, stem, chosen)
     except Exception as e:
         return [(d, "convert: %s" % (str(e)[:80] or type(e).__name__)) for d, _t in looks]
     image = blp_reader(cache)
@@ -501,6 +502,7 @@ def main():
     for g in db2_rows(args.cache, "CreatureDisplayInfoGeosetData"):
         geo[g["CreatureDisplayInfoID"]][int(g["GeosetIndex"]) + 1] = int(g["GeosetValue"])
     pet_type = {p["ID"]: int(p["PetTypeEnum"]) for p in db2_rows(args.cache, "BattlePetSpecies")}
+    custom = customization_textures(args.cache)
     family = {}
     if args.families:
         for line in open(args.families, encoding="utf-8").read().splitlines()[1:]:
@@ -528,7 +530,8 @@ def main():
                               "ribbons": result.get("ribbons", 0), "tex4": bool(tex[3]),
                               "geo": bool(geo.get(display)), "nomove": result.get("no_basic") or []}
             if result.get("result") == "ok":
-                variants[(int(fdid), tuple(sorted(geo.get(display, {}).items())), stem)].append((display, tex[:3]))
+                variants[(int(fdid), tuple(sorted(geo.get(display, {}).items())), stem,
+                          tuple(sorted(custom.get(display, {}).items())))].append((display, tex[:3]))
         t = tiles[display]
         if name not in t["names"]:
             t["names"].append(name)
@@ -542,9 +545,9 @@ def main():
         elif not t["group"]:
             t["group"] = "Pets: " + PET_TYPES[pet_type.get(thing, 0) % len(PET_TYPES)]
 
-    jobs = [(args.cache, valid, args.out, fdid, geosets, stem, looks, fallback[str(fdid)])
-            for (fdid, geosets, stem), looks in sorted(variants.items())]
-    print("%d looks on %d model variants" % (sum(len(j[6]) for j in jobs), len(jobs)), flush=True)
+    jobs = [(args.cache, valid, args.out, fdid, geosets, stem, chosen, looks, fallback[str(fdid)])
+            for (fdid, geosets, stem, chosen), looks in sorted(variants.items())]
+    print("%d looks on %d model variants" % (sum(len(j[7]) for j in jobs), len(jobs)), flush=True)
     drawn_path = os.path.join(args.out, "drawn.json")
     if args.page_only:
         notes = json.load(open(drawn_path))
