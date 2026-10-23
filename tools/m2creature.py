@@ -413,8 +413,11 @@ class Converter:
         track's default instead, and a colour's default is black: a totem whose first sequence
         isn't Stand stood as a black shape, and a glow went out whenever a form left its first
         animation. So every empty sequence of a colour track gets that first key, or white if
-        retail has none. Alpha tracks stay as they are: their default is opaque, which fits how
-        retail keys them (fade in at spawn, fade out at death, nothing while standing)."""
+        retail has none. Alpha tracks stay as they are: a sequence without keys is opaque, which
+        fits how retail keys them (fade in at spawn, fade out at death, nothing while standing).
+        But an alpha track with no arrays at all, which retail writes for a colour that is never
+        faded, gets one opaque key: the client's own models never leave one empty, and the
+        Tuskarr Hermit Crab's body, drawn through two such colours, didn't show."""
         raw, n = self.m.raw("colors", 40)
         rows = b""
         for i in range(n):
@@ -424,7 +427,10 @@ class Converter:
                 rest = self.rest_value(rec[:TRACK_SIZE], 12) or struct.pack("<3f", 1.0, 1.0, 1.0)
                 per = [(t, v) if t else ([0], rest) for t, v in per]
             rows += self.write_track((interp, gseq, per), 12)
-            rows += self.write_track(self.read_track(rec[TRACK_SIZE:], 2), 2)
+            alpha = self.read_track(rec[TRACK_SIZE:], 2)
+            if not any(t for t, _v in alpha[2]):
+                alpha = (alpha[0], alpha[1], [([0], struct.pack("<h", 0x7FFF))])
+            rows += self.write_track(alpha, 2)
         return self.blob.add(rows, n)
 
     def rest_value(self, raw, value_size):
