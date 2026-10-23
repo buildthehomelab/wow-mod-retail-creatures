@@ -60,6 +60,10 @@ from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, skin_mi
 #   archives        {kind of look: MPQ file name}: with --data-dir, each kind's models and textures
 #                   go into their own archive there, and --out holds the two DBCs only. The big
 #                   archives then never change when another patch's DBC rows do
+#   effects         true: keep particle emitters, ribbons, lights and the glow and shine passes
+#                   (see m2creature.py). Looks whose emitters take the display's particle colours
+#                   get their retail ParticleColor rows, added to the ParticleColor.dbc in --dbc
+#                   (the client's own copy, or the one a patch before this one ships)
 PACK_FIELDS = ("looks", "root", "first_display", "first_model", "prune_textures", "template", "source")
 TRANSMOG_FIELDS = ("preview_base", "subname", "sort_base")
 
@@ -329,6 +333,57 @@ def load_model(cache, fdid, stem, warnings):
     return raw, m, lambda n: casc(cache, m.sfid[n], source) if n else skin_raw, anims
 
 
+class ParticleColors:
+    """The base ParticleColor.dbc and the retail rows the looks need. A particle emitter with
+    colour index 11-13 takes its colours from its display's ParticleColor row. Retail's ids are
+    the client's for the rows both have (281-586), so a retail row keeps its id, or takes a base
+    row with the same colours; only an id the base gives other colours moves past the last.
+    New rows go at the end and the base's own stay in their order (see write)."""
+
+    def __init__(self, dbc_dir, cache):
+        path = os.path.join(dbc_dir, "ParticleColor.dbc")
+        self.rows = read_dbc(path) if os.path.isfile(path) else None
+        self.retail = db2(cache, "ParticleColor")
+        self.added = []
+        self.got = {}  # retail id: the id the looks use
+
+    def row_for(self, retail_id, display, warnings):
+        if not int(retail_id or 0):
+            return 0
+        if self.rows is None:
+            warnings.append("%d: no ParticleColor.dbc in --dbc: its particle colours are left off" % display)
+            return 0
+        if retail_id not in self.got:
+            r = self.retail.get(retail_id)
+            if not r:
+                warnings.append("%d: retail ParticleColor %s is missing" % (display, retail_id))
+                return 0
+            values = [int(r["%s_%d" % (k, i)]) & 0xFFFFFFFF for k in ("Start", "MID", "End") for i in range(3)]
+            rows, want = self.rows[0], int(retail_id)
+            base = {x[0]: x[1:] for x in rows}
+            same = [i for i, v in base.items() if v == values]
+            if base.get(want) == values:
+                got = want
+            elif same:
+                got = same[0]
+            else:
+                got = want if want not in base else max(base) + 1
+                rows.append([got] + values)
+                self.added.append(got)
+            self.got[retail_id] = got
+        return self.got[retail_id]
+
+    def write(self, path):
+        """Rows as they are: write_dbc sorts by id, and a client table read in file order
+        changes with that (see SkillRaceClassInfo)."""
+        rows, strings, fields = self.rows
+        with open(path, "wb") as f:
+            f.write(struct.pack("<4s4I", b"WDBC", len(rows), fields, fields * 4, len(strings)))
+            for r in rows:
+                f.write(struct.pack("<%dI" % fields, *r))
+            f.write(strings)
+
+
 def folder_name(model):
     return "".join(p[:1].upper() + p[1:] for p in model.split("_"))
 
@@ -367,6 +422,16 @@ def main():
     cdi_rows, cdi_str, cdi_fields = read_dbc(os.path.join(args.dbc, "CreatureDisplayInfo.dbc"))
     cmd_rows, cmd_str, cmd_fields = read_dbc(os.path.join(args.dbc, "CreatureModelData.dbc"))
     taken = {r[0] for r in cdi_rows}
+    colors = ParticleColors(args.dbc, args.cache) if pack.get("effects") else None
+    if colors and colors.rows:
+        # A patch that ships ParticleColor.dbc replaces the whole table: built on the client's
+        # copy instead of the one a patch before it ships, it drops that patch's rows.
+        have = {r[0] for r in colors.rows[0]}
+        lost = sorted({r[13] for r in cdi_rows if r[13] and r[13] not in have})
+        if lost:
+            sys.exit("CreatureDisplayInfo.dbc in --dbc uses ParticleColor rows its ParticleColor.dbc lacks (%s): "
+                     "put the ParticleColor.dbc of the patch those displays come from in --dbc"
+                     % ", ".join(map(str, lost[:10])))
     # A look without a retail display is one the client already has: no model, only the SQL
     # (and, with a client_display, a row of its own: that display at another size).
     for l in looks:
@@ -462,7 +527,7 @@ def main():
             lod = 0
 
             def converter():
-                c = Converter(raw, skins(lod), anims, valid, stem)
+                c = Converter(raw, skins(lod), anims, valid, stem, effects=bool(pack.get("effects")))
                 if pack["prune_textures"]:
                     c.mask_textures = {i for i, fd in enumerate(m.txid) if any(
                         w in os.path.basename(texture_names.get(fd, "")) for w in MASK_WORDS)}
@@ -475,7 +540,8 @@ def main():
             # Skin 0 unless the mesh drawn overflows it: then the next, lower-detail skin.
             while True:
                 conv = converter()
-                drawn = conv.batch_textures(dict(geosets)) if pack["prune_textures"] else None
+                hidden = {i for i, fd in enumerate(m.txid) if fd in hide}
+                drawn = conv.batch_textures(dict(geosets), hidden) if pack["prune_textures"] else None
                 textures, slots, tex_files, tex_warnings = [], set(), {}, []
                 for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
                     fd = (m.txid[i] if i < len(m.txid) else 0) or chosen.get(ttype, 0)
@@ -536,7 +602,7 @@ def main():
             if copies:
                 conv = converter()
                 if drawn is not None:
-                    conv.batch_textures(dict(geosets))
+                    conv.batch_textures(dict(geosets), hidden)
                 m2, skin = conv.convert(textures, dict(geosets), key_copies=copies)
             for i, use in conv.texture_use.items():
                 ttype, _f, name = (textures + [copies[k] for k in sorted(copies)])[i]
@@ -617,7 +683,7 @@ def main():
                 files["%s\\%sk.blp" % (folder, name)] = ("keytex", int(name[1:]))
                 row[6 + k] = add_string(cdi_str, name + "k")
         row[9] = 0
-        row[13] = 0
+        row[13] = colors.row_for(rd["ParticleColorID"], display, warnings) if colors else 0
         row[14] = 0
         row[15] = 0
         cdi_rows.append(row)
@@ -662,6 +728,11 @@ def main():
     write_dbc(os.path.join(args.work, "CreatureModelData.dbc"), cmd_rows, cmd_str, cmd_fields)
     files["DBFilesClient\\CreatureDisplayInfo.dbc"] = ("file", os.path.join(args.work, "CreatureDisplayInfo.dbc"))
     files["DBFilesClient\\CreatureModelData.dbc"] = ("file", os.path.join(args.work, "CreatureModelData.dbc"))
+    if colors and colors.added:
+        path = os.path.join(args.work, "ParticleColor.dbc")
+        colors.write(path)
+        files["DBFilesClient\\ParticleColor.dbc"] = ("file", path)
+        print("%d ParticleColor rows added" % len(colors.added))
     data = {}  # archive file name -> its files
     if args.dbc_only or (args.data_dir and pack.get("archives")):
         if not args.dbc_only:

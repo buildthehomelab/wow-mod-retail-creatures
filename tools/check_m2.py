@@ -42,9 +42,10 @@ def check(m2, skin):
         n, off = h[name]
         if n and (off + n * size > len(m2) or off < 0x130):
             errors.append("%s: %d x %d at %d is outside the file" % (name, n, size, off))
-    for name in ("lights", "ribbons", "particles"):
-        if h[name][0]:
-            errors.append("%s present (converter should drop them)" % name)
+    for name, size in (("lights", 156), ("ribbons", 176), ("particles", 476)):
+        n, off = h[name]
+        if n and (off + n * size > len(m2) or off < 0x130):
+            errors.append("%s: %d x %d at %d is outside the file" % (name, n, size, off))
     nseq = h["sequences"][0]
     seqs = [struct.unpack_from("<HHIfIhHIII6ffhH", m2, h["sequences"][1] + 64 * i) for i in range(nseq)]
     loops = list(struct.unpack_from("<%dI" % h["global_loops"][0], m2, h["global_loops"][1]))
@@ -55,7 +56,7 @@ def check(m2, skin):
             vn, vo = struct.unpack_from("<II", m2, off + 12)
         if tn == 0:
             return
-        if gseq == -1 and tn != nseq:
+        if gseq == -1 and tn != nseq and tn != 1:  # one array: the same for every sequence
             errors.append("%s: %d timestamp arrays for %d sequences" % (where, tn, nseq))
         if gseq != -1 and gseq >= len(loops):
             errors.append("%s: global sequence %d of %d" % (where, gseq, len(loops)))
@@ -68,7 +69,7 @@ def check(m2, skin):
                 errors.append("%s seq %d: timestamps outside the file" % (where, k))
             if list(ts) != sorted(ts):
                 errors.append("%s seq %d: timestamps not sorted" % (where, k))
-            limit = loops[gseq] if gseq != -1 else seqs[k][2]
+            limit = loops[gseq] if gseq != -1 else max([s[2] for s in seqs] or [0]) if tn == 1 else seqs[k][2]
             if ts and ts[-1] > limit:
                 errors.append("%s seq %d: key at %d past duration %d" % (where, k, ts[-1], limit))
             if vsize:
@@ -108,6 +109,53 @@ def check(m2, skin):
         track("camera %d pos" % i, c + 16, 36)
         track("camera %d target" % i, c + 48, 36)
         track("camera %d roll" % i, c + 80, 12)
+    ntex, nmat = h["textures"][0], h["materials"][0]
+
+    def array(where, off, size):
+        n, p = struct.unpack_from("<II", m2, off)
+        if n and p + n * size > len(m2):
+            errors.append("%s: %d x %d outside the file" % (where, n, size))
+            return ()
+        return struct.unpack_from("<%dH" % n, m2, p) if size == 2 else ()
+
+    for i in range(h["lights"][0]):
+        b = h["lights"][1] + 156 * i
+        ltype, bone = struct.unpack_from("<Hh", m2, b)
+        if bone >= nb or ltype > 1:
+            errors.append("light %d: type %d, bone %d" % (i, ltype, bone))
+        for k, (off, size) in enumerate([(16, 12), (36, 4), (56, 12), (76, 4), (96, 4), (116, 4), (136, 1)]):
+            track("light %d track %d" % (i, k), b + off, size)
+    for i in range(h["ribbons"][0]):
+        b = h["ribbons"][1] + 176 * i
+        if struct.unpack_from("<I", m2, b + 4)[0] >= nb:
+            errors.append("ribbon %d: bad bone" % i)
+        if any(t >= ntex for t in array("ribbon %d textures" % i, b + 20, 2)):
+            errors.append("ribbon %d: texture out of range" % i)
+        if any(x >= nmat for x in array("ribbon %d materials" % i, b + 28, 2)):
+            errors.append("ribbon %d: material out of range" % i)
+        for k, (off, size) in enumerate([(36, 12), (56, 2), (76, 4), (96, 4), (132, 2), (152, 1)]):
+            track("ribbon %d track %d" % (i, k), b + off, size)
+    for i in range(h["particles"][0]):
+        b = h["particles"][1] + 476 * i
+        flags, = struct.unpack_from("<I", m2, b + 4)
+        bone, tex = struct.unpack_from("<HH", m2, b + 20)
+        blend, etype = m2[b + 40], m2[b + 41]
+        if bone >= nb or tex >= ntex or blend > 6 or not 1 <= etype <= 3 or flags & 0x10800000:
+            errors.append("particle %d: bone %d, texture %d, blend %d, type %d, flags %#x"
+                          % (i, bone, tex, blend, etype, flags))
+        for where, off, size in (("model", 24, 1), ("recursion", 32, 1), ("spline", 448, 12)):
+            array("particle %d %s" % (i, where), b + off, size)
+        for off in (260, 276, 292, 316, 332):  # fixed16 keys + values, no sequences
+            nt = struct.unpack_from("<I", m2, b + off)[0]
+            nv = struct.unpack_from("<I", m2, b + off + 8)[0]
+            array("particle %d block %d" % (i, off), b + off, 2)
+            array("particle %d block %d values" % (i, off), b + off + 8,
+                  {260: 12, 276: 2, 292: 8, 316: 2, 332: 2}[off])
+            if nt != nv:
+                errors.append("particle %d block %d: %d keys, %d values" % (i, off, nt, nv))
+        for off, size in [(52, 4), (72, 4), (92, 4), (112, 4), (132, 4), (152, 4), (176, 4), (200, 4),
+                          (220, 4), (240, 4), (456, 1)]:
+            track("particle %d track %d" % (i, off), b + off, size)
     for i, s in enumerate(seqs):
         if s[18] != -1 and not 0 <= s[18] < nseq:
             errors.append("sequence %d: variationNext %d" % (i, s[18]))
@@ -191,6 +239,8 @@ def check(m2, skin):
             errors.append("batch %d: material %d" % (i, bt[6]))
         if bt[9] >= len(tl) or tl[bt[9]] >= ntex:
             errors.append("batch %d: texture combo %d" % (i, bt[9]))
+        if bt[10] >= h["texunit_lookup"][0]:
+            errors.append("batch %d: texture unit combo %d" % (i, bt[10]))
         if bt[11] >= h["weight_lookup"][0]:
             errors.append("batch %d: weight combo %d" % (i, bt[11]))
         if bt[12] >= h["transform_lookup"][0]:
