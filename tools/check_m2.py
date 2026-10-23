@@ -50,10 +50,14 @@ def check(m2, skin):
     seqs = [struct.unpack_from("<HHIfIhHIII6ffhH", m2, h["sequences"][1] + 64 * i) for i in range(nseq)]
     loops = list(struct.unpack_from("<%dI" % h["global_loops"][0], m2, h["global_loops"][1]))
 
-    def track(where, off, vsize):
+    def track(where, off, vsize, required=False):
+        """required: the client reads the track's first value array when it sets the effect up,
+        without checking there is one (no arrays = ERROR #132 at 0x00833BEB)."""
         interp, gseq, tn, to = struct.unpack_from("<HhII", m2, off)
         if vsize:
             vn, vo = struct.unpack_from("<II", m2, off + 12)
+            if required and not vn:
+                errors.append("%s: no value arrays (the client reads the first one)" % where)
         if tn == 0:
             return
         if gseq == -1 and tn != nseq and tn != 1:  # one array: the same for every sequence
@@ -124,7 +128,7 @@ def check(m2, skin):
         if bone >= nb or ltype > 1:
             errors.append("light %d: type %d, bone %d" % (i, ltype, bone))
         for k, (off, size) in enumerate([(16, 12), (36, 4), (56, 12), (76, 4), (96, 4), (116, 4), (136, 1)]):
-            track("light %d track %d" % (i, k), b + off, size)
+            track("light %d track %d" % (i, k), b + off, size, off != 136)
     for i in range(h["ribbons"][0]):
         b = h["ribbons"][1] + 176 * i
         if struct.unpack_from("<I", m2, b + 4)[0] >= nb:
@@ -134,7 +138,7 @@ def check(m2, skin):
         if any(x >= nmat for x in array("ribbon %d materials" % i, b + 28, 2)):
             errors.append("ribbon %d: material out of range" % i)
         for k, (off, size) in enumerate([(36, 12), (56, 2), (76, 4), (96, 4), (132, 2), (152, 1)]):
-            track("ribbon %d track %d" % (i, k), b + off, size)
+            track("ribbon %d track %d" % (i, k), b + off, size, off != 152)
     for i in range(h["particles"][0]):
         b = h["particles"][1] + 476 * i
         flags, = struct.unpack_from("<I", m2, b + 4)
@@ -155,7 +159,7 @@ def check(m2, skin):
                 errors.append("particle %d block %d: %d keys, %d values" % (i, off, nt, nv))
         for off, size in [(52, 4), (72, 4), (92, 4), (112, 4), (132, 4), (152, 4), (176, 4), (200, 4),
                           (220, 4), (240, 4), (456, 1)]:
-            track("particle %d track %d" % (i, off), b + off, size)
+            track("particle %d track %d" % (i, off), b + off, size, off != 456)
     for i, s in enumerate(seqs):
         if s[18] != -1 and not 0 <= s[18] < nseq:
             errors.append("sequence %d: variationNext %d" % (i, s[18]))

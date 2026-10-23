@@ -29,7 +29,12 @@ Nothing from Blizzard is stored here or in the packs; the files come from
     `"effects": true`, and dropped otherwise:
     - Retail's particle emitter is 3.3.5's with 16 bytes of multi-texture settings added; a
       multi-texture emitter draws its first texture, and retail's blend mode 7 draws additive.
-      Emitters that spawn models are left out, and so are those of a geoset the look hides.
+      Emitters that spawn models are left out, and so are those of a geoset the look hides
+      and those that emit only in animations 3.3.5 lacks (the pygmy owl's skyriding trail).
+    - The client reads the first value array of every emitter track (bar the enabled one),
+      ribbon track (bar visibility) and light track (bar visible) when it sets the effect up,
+      without checking there is one: an emitter with no emission rate arrays crashed it
+      (ERROR #132 at 0x00833BEB). Such a track keeps one empty array.
     - Ribbons and lights are the same records in both clients.
     - A retail batch draws one texture in 3.3.5. With effects it reads the coordinates its
       retail shader gives it (an environment-mapped shine moves with the camera), retail's
@@ -54,7 +59,9 @@ Nothing from Blizzard is stored here or in the packs; the files come from
   a model it rejects. That includes triangles the client's mouse hit test would read outside
   its buffer (a submesh's triangle pointing at another submesh's vertices, or a collision
   triangle past the collision vertices): such a model draws fine and crashes the client, now
-  and then, when the mouse moves over it.
+  and then, when the mouse moves over it. It also rejects an effect track the client reads
+  the first value array of when it has none (that one crashes the client as soon as the
+  model loads).
 - `tools/fetch.py` downloads and caches model files and tables from wago.tools.
 - `tools/tact.py` reads the model files straight from Blizzard's CDN instead: set
   `RETAIL_SOURCE=cdn`. Its first use downloads 400 MB of indexes for the live retail build and
