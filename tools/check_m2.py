@@ -51,13 +51,14 @@ def check(m2, skin):
     loops = list(struct.unpack_from("<%dI" % h["global_loops"][0], m2, h["global_loops"][1]))
 
     def track(where, off, vsize, required=False):
-        """required: the client reads the track's first value array when it sets the effect up,
-        without checking there is one (no arrays = ERROR #132 at 0x00833BEB)."""
+        """required: a track the client's own models never leave without value arrays. For an
+        emitter the client reads the first one when it sets it up, without checking there is one
+        (ERROR #132 at 0x00833BEB); a colour alpha track without any hid the mesh drawn through it."""
         interp, gseq, tn, to = struct.unpack_from("<HhII", m2, off)
         if vsize:
             vn, vo = struct.unpack_from("<II", m2, off + 12)
             if required and not vn:
-                errors.append("%s: no value arrays (the client reads the first one)" % where)
+                errors.append("%s: no value arrays (the client's own models always have one)" % where)
         if tn == 0:
             return
         if gseq == -1 and tn != nseq and tn != 1:  # one array: the same for every sequence
@@ -122,6 +123,12 @@ def check(m2, skin):
             return ()
         return struct.unpack_from("<%dH" % n, m2, p) if size == 2 else ()
 
+    for i in range(h["colors"][0]):
+        b = h["colors"][1] + 40 * i
+        track("colour %d" % i, b, 12, True)
+        track("colour %d alpha" % i, b + 20, 2, True)
+    for i in range(h["texture_weights"][0]):
+        track("texture weight %d" % i, h["texture_weights"][1] + 20 * i, 2, True)
     for i in range(h["lights"][0]):
         b = h["lights"][1] + 156 * i
         ltype, bone = struct.unpack_from("<Hh", m2, b)
