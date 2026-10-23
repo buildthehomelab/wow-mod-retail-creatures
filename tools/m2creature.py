@@ -39,6 +39,7 @@ BOUNDS_LIMIT, BOUNDS_SLACK = 1.0, 0.5  # the model's box against its drawn mesh 
 PARTICLE_SIZE, PARTICLE_RETAIL = 476, 492
 PARTICLE_TRACKS = [(52, 4), (72, 4), (92, 4), (112, 4), (132, 4), (152, 4), (176, 4), (200, 4),
                    (220, 4), (240, 4), (456, 1)]
+PARTICLE_RATE = 176
 PARTICLE_BLOCKS = [(260, 12), (276, 2), (292, 8), (316, 2), (332, 2)]  # fixed16 times + values
 PARTICLE_MULTI_TEXTURE = 0x10000000  # texture holds three 5-bit indices; 3.3.5 draws one
 # Retail packs gravity into the float's 4 bytes (int8 x, int8 y, int16 z: a direction and a
@@ -49,6 +50,12 @@ RIBBON_SIZE = 176
 RIBBON_TRACKS = [(36, 12), (56, 2), (76, 4), (96, 4), (132, 2), (152, 1)]
 LIGHT_SIZE = 156
 LIGHT_TRACKS = [(16, 12), (36, 4), (56, 12), (76, 4), (96, 4), (116, 4), (136, 1)]
+# Tracks the client reads sequence 0 of when it sets an effect up, without checking there is one
+# (an emitter with no emission rate arrays crashed it: ERROR #132 at 0x00833BEB). Every track but
+# the enabled/visibility one; the client's own models never leave these without arrays.
+PARTICLE_REQUIRED = {off for off, _size in PARTICLE_TRACKS if off != 456}
+RIBBON_REQUIRED = {off for off, _size in RIBBON_TRACKS if off != 152}
+LIGHT_REQUIRED = {off for off, _size in LIGHT_TRACKS if off != 136}
 
 # Retail batches pick a shader by shader_id. 3.3.5 works one out from the texture count and the
 # texture unit lookup (0 = first UV set, 1 = second, -1 = environment map), and draws one texture
@@ -378,12 +385,16 @@ class Converter:
         vs = b.add(b"".join(struct.pack("<II", *x) for x in values), len(per))
         return struct.pack(TRACK, interp, gseq, *ts, *vs)
 
-    def convert_tracks(self, raw, layout):
-        """Rewrite a record: layout = [(offset, value size) for each M2Track in it]."""
+    def convert_tracks(self, raw, layout, required=()):
+        """Rewrite a record: layout = [(offset, value size) for each M2Track in it]. A track at
+        an offset in required keeps one (empty) array when it has no keys."""
         out = bytearray(raw)
         for off, size in layout:
             t = self.read_track(raw[off:off + TRACK_SIZE], size)
-            out[off:off + TRACK_SIZE] = self.write_track(t, size)
+            w = self.write_track(t, size)
+            if off in required and not struct.unpack_from(TRACK, w)[2]:
+                w = self._write_arrays(t[0], t[1], [([], b"")], size)
+            out[off:off + TRACK_SIZE] = w
         return bytes(out)
 
     def records(self, name, size, layout):
@@ -743,6 +754,9 @@ class Converter:
             tex = self.particle_texture(i)
             if tex < len(types) and 11 <= types[tex] <= 13:
                 continue  # none of the client's own emitters draws a creature skin slot
+            rate = self.read_track(r[PARTICLE_RATE:PARTICLE_RATE + TRACK_SIZE], 4)
+            if not any(t for t, _v in rate[2]):
+                continue  # emits only in animations 3.3.5 lacks (the owl's skyriding trail)
             out.append(i)
         return out
 
@@ -782,7 +796,7 @@ class Converter:
             if tex in self.skipped_textures or tex >= self.m.h["textures"][0]:
                 continue
             src = raw[i * PARTICLE_RETAIL:i * PARTICLE_RETAIL + PARTICLE_SIZE]
-            r = bytearray(self.convert_tracks(src, PARTICLE_TRACKS))
+            r = bytearray(self.convert_tracks(src, PARTICLE_TRACKS, PARTICLE_REQUIRED))
             flags, = struct.unpack_from("<I", r, 4)
             if flags & PARTICLE_PACKED_GRAVITY:
                 self.unpack_gravity(r)
@@ -823,7 +837,7 @@ class Converter:
             if any(t in self.skipped_textures for t in texs):
                 continue
             src = raw[i * RIBBON_SIZE:(i + 1) * RIBBON_SIZE]
-            r = bytearray(self.convert_tracks(src, RIBBON_TRACKS))
+            r = bytearray(self.convert_tracks(src, RIBBON_TRACKS, RIBBON_REQUIRED))
             struct.pack_into("<II", r, 20, *self.relocate(src, 20, 2))
             struct.pack_into("<II", r, 28, *self.relocate(src, 28, 2))
             r[174:176] = b"\0\0"  # retail's colour index and transform: padding in 3.3.5
@@ -833,7 +847,8 @@ class Converter:
 
     def lights(self):
         raw, n = self.m.raw("lights", LIGHT_SIZE)
-        rows = b"".join(self.convert_tracks(raw[i * LIGHT_SIZE:(i + 1) * LIGHT_SIZE], LIGHT_TRACKS)
+        rows = b"".join(self.convert_tracks(raw[i * LIGHT_SIZE:(i + 1) * LIGHT_SIZE], LIGHT_TRACKS,
+                                            LIGHT_REQUIRED)
                         for i in range(n))
         return self.blob.add(rows, n)
 
