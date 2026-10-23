@@ -25,8 +25,20 @@ Nothing from Blizzard is stored here or in the packs; the files come from
   - It also keeps attachments, key bones, colours, texture animations, footstep events and the
     portrait camera.
   - Retail creature geosets are baked in per look, because the 3.3.5 client can't pick them.
-  - Particles, ribbons, lights and extra texture passes (env/glow) have no 3.3.5 equivalent and
-    are dropped. The artifact forms lose some sparkle.
+  - Particles, ribbons, lights and the glow and shine passes are kept for a pack with
+    `"effects": true`, and dropped otherwise:
+    - Retail's particle emitter is 3.3.5's with 16 bytes of multi-texture settings added; a
+      multi-texture emitter draws its first texture, and retail's blend mode 7 draws additive.
+      Emitters that spawn models are left out, and so are those of a geoset the look hides.
+    - Ribbons and lights are the same records in both clients.
+    - A retail batch draws one texture in 3.3.5. With effects it reads the coordinates its
+      retail shader gives it (an environment-mapped shine moves with the camera), retail's
+      extra passes are drawn, and a shader that adds a glowing texture onto the first (the
+      AddAlpha family: glowing eyes, runes, a shine) gets that texture as an additive pass of
+      its own. The common combo that multiplies an environment map in where the first
+      texture's alpha says has no 3.3.5 pass and stays off.
+    - Emitters coloured by their display (colour index 11-13) get the look's retail
+      ParticleColor row, added to the `ParticleColor.dbc` in `--dbc`.
   - Some retail `.anim` files no longer match their model (left over from an older version).
     Those animations (mostly sit, sleep and emotes) are dropped, and the client falls back to
     another animation.
@@ -122,7 +134,7 @@ A pack repo holds:
   | `preview_base` | creature_template entries for the previews, a block of 500; a look's entry is base + (display - first_display) unless its row has a `preview` |
   | `subname` | subname of the preview creatures; the SQL only ever removes creatures in the block that carry it |
   | `sort_base` | SortOrder of the pack's first look in `mod_transmog_plus_forms` |
-  | `prune_textures` | leave out textures only dropped particles used, and draw a two-texture effect mesh with the one that isn't a mask |
+  | `prune_textures` | leave out textures nothing converted draws with (the dropped particles and passes, without `effects`), and draw a two-texture effect mesh with the one that isn't a mask |
   | `template` | each kind of look and the stock CreatureDisplayInfo id it clones for sounds, blood, footprints and size |
   | `source` | where the looks come from, for the head of the generated SQL |
 
@@ -132,6 +144,7 @@ A pack repo holds:
   | --- | --- |
   | `transmog` | `false`: no rows for mod-transmog-plus and no preview creatures, so the SQL is the DBC rows only (`preview_base`, `subname` and `sort_base` can then be left out) |
   | `plain` | `true`: the new rows carry no sounds and no footprints, since hundreds of unlike models can't all sound like the one stock creature their kind clones |
+  | `effects` | `true`: keep particle emitters, ribbons, lights and the glow and shine passes; looks whose particles take the display's colours get ParticleColor rows (put the client's `ParticleColor.dbc` in `--dbc`) |
   | `archives` | each kind of look and the MPQ its models and textures go into; with `--data-dir`, those archives are written there and `--out` holds the two DBCs only, so the big archives don't change when another patch's DBC rows do. Two kinds can name the same archive |
 
 - The data file, tab-separated, one look per row: `display` (the 3.3.5 display id; never change
@@ -179,7 +192,10 @@ module uses.
 - **A look is a black shape, in a preview tile and in the world**: its colour track has no key
   for the animation playing. The converter fills those now; rebuild the patch.
 - **A converted model has no flames, drips or sparks**: those are particle effects, which the
-  converter drops. Mesh glows and scrolling effects stay.
+  converter drops unless the pack has `"effects": true`. Mesh glows and scrolling effects stay.
+- **A look's particles are the wrong colour, or white**: its emitters take the display's
+  ParticleColor row, and `--dbc` had no `ParticleColor.dbc` to add it to (the build warns).
+  Copy the client's (or the last patch's that ships one) into `--dbc` and rebuild.
 - **White armour on other creatures after adding a pack's patch**: an HD creature pack's DBCs
   were replaced. Use the `--dbc-only` patch.
 - **wago.tools answers 502/504**: the fetcher retries; rerun if it still gives up. Downloads are
