@@ -35,7 +35,9 @@ Nothing from Blizzard is stored here or in the packs; the files come from
       ribbon track (bar visibility) and light track (bar visible) when it sets the effect up,
       without checking there is one: an emitter with no emission rate arrays crashed it
       (ERROR #132 at 0x00833BEB). Such a track keeps one empty array.
-    - Ribbons and lights are the same records in both clients.
+    - Ribbons and lights are the same records in both clients. A retail ribbon blends up to
+      three textures; every 3.3.5 ribbon has one texture and one material, so it draws the
+      first (the ribbon's shape) and the scrolling masks are left out.
     - A retail batch draws one texture in 3.3.5. With effects it reads the coordinates its
       retail shader gives it (an environment-mapped shine moves with the camera), retail's
       extra passes are drawn, and a shader that adds a glowing texture onto the first (the

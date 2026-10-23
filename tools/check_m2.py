@@ -140,6 +140,8 @@ def check(m2, skin):
         b = h["ribbons"][1] + 176 * i
         if struct.unpack_from("<I", m2, b + 4)[0] >= nb:
             errors.append("ribbon %d: bad bone" % i)
+        if struct.unpack_from("<I", m2, b + 20)[0] != 1 or struct.unpack_from("<I", m2, b + 28)[0] != 1:
+            errors.append("ribbon %d: not one texture and one material" % i)
         if any(t >= ntex for t in array("ribbon %d textures" % i, b + 20, 2)):
             errors.append("ribbon %d: texture out of range" % i)
         if any(x >= nmat for x in array("ribbon %d materials" % i, b + 28, 2)):

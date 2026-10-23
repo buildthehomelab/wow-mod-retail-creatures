@@ -783,7 +783,7 @@ class Converter:
             return set()
         out = {self.particle_texture(i) for i in self.emitters()}
         for i in range(self.m.h["ribbons"][0]):
-            out.update(self.ribbon_textures(i))
+            out.update(self.ribbon_textures(i)[:1])
         return out
 
     def relocate(self, rec, off, size):
@@ -836,16 +836,20 @@ class Converter:
                 struct.pack_into("<f", data, at + 4 * j, -up * z * GRAVITY_SCALE)
 
     def ribbons(self):
+        """3.3.5 ribbons: one texture and one material each, as every one of the client's own
+        has. Retail blends up to three textures into a ribbon (a shape and scrolling masks);
+        3.3.5 draws the first, the shape, and the rest would be drawn as passes of their own
+        with materials past the ribbon's one (the pygmy owl's hard white wing streaks)."""
         raw, n = self.m.raw("ribbons", RIBBON_SIZE)
         rows, kept = b"", 0
         for i in range(n):
-            texs = self.ribbon_textures(i)
-            if any(t in self.skipped_textures for t in texs):
+            if self.ribbon_textures(i)[0] in self.skipped_textures:
                 continue
             src = raw[i * RIBBON_SIZE:(i + 1) * RIBBON_SIZE]
             r = bytearray(self.convert_tracks(src, RIBBON_TRACKS, RIBBON_REQUIRED))
-            struct.pack_into("<II", r, 20, *self.relocate(src, 20, 2))
-            struct.pack_into("<II", r, 28, *self.relocate(src, 28, 2))
+            for off in (20, 28):  # textures, materials
+                _n, at = struct.unpack_from("<II", src, off)
+                struct.pack_into("<II", r, off, *self.blob.add(self.m.md[at:at + 2], 1))
             r[174:176] = b"\0\0"  # retail's colour index and transform: padding in 3.3.5
             rows += bytes(r)
             kept += 1
