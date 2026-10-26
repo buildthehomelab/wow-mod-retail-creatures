@@ -168,4 +168,7 @@ def customization_geosets(cache):
             g = geosets.get(e["ChrCustomizationGeosetID"])
             if g and e["ChrCustomizationGeosetID"] != "0":
                 out.setdefault(models[model_id]["DisplayID"], {}).setdefault(int(g["GeosetType"]), int(g["GeosetID"]))
-    return out
+    # Variant 1 of a group past 0 is what a look shows anyway: left out, so a look whose choices
+    # are all defaults converts the same as before (and shares its model).
+    out = {d: {k: v for k, v in g.items() if k == 0 or v != 1} for d, g in out.items()}
+    return {d: g for d, g in out.items() if g}
