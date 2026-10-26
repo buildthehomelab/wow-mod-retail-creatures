@@ -60,6 +60,10 @@ from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, inline_
 #   archives        {kind of look: MPQ file name}: with --data-dir, each kind's models and textures
 #                   go into their own archive there, and --out holds the two DBCs only. The big
 #                   archives then never change when another patch's DBC rows do
+#   customization_geosets  true: a customizable model's display (a ChrModel: dragonriding drakes,
+#                   airships) shows the geosets of each customization option's first choice, where
+#                   retail's display names none (see fetch.customization_geosets). Without it every
+#                   alternative part in such a model's group 0 is drawn at once
 #   effects         true: keep particle emitters, ribbons, lights and the glow and shine passes
 #                   (see m2creature.py). Looks whose emitters take the display's particle colours
 #                   get their retail ParticleColor rows, added to the ParticleColor.dbc in --dbc
@@ -418,10 +422,11 @@ def main():
         geo[g["CreatureDisplayInfoID"]][int(g["GeosetIndex"]) + 1] = int(g["GeosetValue"])
     custom = customization_textures(args.cache)
     # A customizable mount's geosets come from its customization choices too, where its display
-    # names none.
-    for display, chosen_geosets in customization_geosets(args.cache).items():
-        if display not in geo:
-            geo[display] = chosen_geosets
+    # names none (pack option customization_geosets).
+    if pack.get("customization_geosets"):
+        for display, chosen_geosets in customization_geosets(args.cache).items():
+            if display not in geo:
+                geo[display] = chosen_geosets
 
     valid = {r[0] for r in read_dbc(os.path.join(args.dbc, "AnimationData.dbc"))[0]}
     cdi_rows, cdi_str, cdi_fields = read_dbc(os.path.join(args.dbc, "CreatureDisplayInfo.dbc"))
