@@ -150,7 +150,8 @@ A pack repo holds:
   | `template` | each kind of look and the stock CreatureDisplayInfo id it clones for sounds, blood, footprints and size |
   | `source` | where the looks come from, for the head of the generated SQL |
 
-  A pack that is a library of models, not looks for a window to pick from, has three more:
+  Optional fields (a pack that is a library of models, not looks for a window to pick from, uses
+  `transmog` and `plain`):
 
   | Field | Meaning |
   | --- | --- |
@@ -158,6 +159,8 @@ A pack repo holds:
   | `plain` | `true`: the new rows carry no sounds and no footprints, since hundreds of unlike models can't all sound like the one stock creature their kind clones |
   | `effects` | `true`: keep particle emitters, ribbons, lights and the glow and shine passes; looks whose particles take the display's colours get ParticleColor rows (put the client's `ParticleColor.dbc` in `--dbc`) |
   | `archives` | each kind of look and the MPQ its models and textures go into; with `--data-dir`, those archives are written there and `--out` holds the two DBCs only, so the big archives don't change when another patch's DBC rows do. Two kinds can name the same archive |
+  | `swim_waterline` | how much of a model's height (its `GeoBoxMaxZ`) is under water when it swims, such as `0.6` for the head and back out. The client floats a swimmer with the water at 75% of its CollisionHeight, and nearly every stock model has a human's 2.03, so a cat form swims under water. Each of the pack's models whose height would float it deeper gets a lower CollisionHeight |
+  | `swim_models` | the base client's own model ids that get the same (with `swim_waterline`): the stock form models. Their rows go into the SQL too, so the server agrees on the height |
 
 - The data file, tab-separated, one look per row: `display` (the 3.3.5 display id; never change
   one a player may have picked), `retail_display` (empty for a look the client already has: no

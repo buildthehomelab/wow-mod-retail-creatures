@@ -64,6 +64,11 @@ from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, skin_mi
 #                   (see m2creature.py). Looks whose emitters take the display's particle colours
 #                   get their retail ParticleColor rows, added to the ParticleColor.dbc in --dbc
 #                   (the client's own copy, or the one a patch before this one ships)
+#   swim_waterline  how much of a model's height (GeoBoxMaxZ) is under water when it swims, such
+#                   as 0.6 for head and back out; the pack's models get a CollisionHeight that
+#                   floats them there, where theirs would float them deeper (see SWIM_DEPTH)
+#   swim_models     the base client's own model ids that get the same: the stock form models.
+#                   Their rows go to the server too, so both sides agree on the height
 PACK_FIELDS = ("looks", "root", "first_display", "first_model", "prune_textures", "template", "source")
 TRANSMOG_FIELDS = ("preview_base", "subname", "sort_base")
 
@@ -87,6 +92,11 @@ MASK_WORDS = ("mask", "square_soft", "gradient")
 # The last CreatureModelData id of the stock 3.3.5a client, which is what the server has. A model
 # row past it that a look uses is an HD pack's, and has to be given to the server too.
 STOCK_MAX_MODEL = 3440
+
+# Wow.exe 12340 (0x730d10) starts a unit swimming once the water is deeper than this share of its
+# collision height and floats it there, so the waterline sits at SWIM_DEPTH x CollisionHeight.
+# Nearly every stock model has a human's 2.03: a cat form (1.47 tall) swims under water.
+SWIM_DEPTH = 0.75
 
 # The server's creaturemodeldata_dbc.ModelName is varchar(100): a longer model path stops its
 # database import, and the worldserver with it.
@@ -128,6 +138,15 @@ def row_of(rows, row_id):
         if r[0] == row_id:
             return list(r)
     sys.exit("row %d missing from the base DBC" % row_id)
+
+
+def float_at(row, waterline):
+    """Lowers a CreatureModelData row's CollisionHeight so the model swims with `waterline` of its
+    height under water. Never raises it: a tall model already floats high enough."""
+    top = struct.unpack("<f", struct.pack("<I", row[22]))[0]
+    height = struct.unpack("<f", struct.pack("<I", row[15]))[0]
+    if top > 0 and waterline * top / SWIM_DEPTH < height:
+        row[15] = f32(waterline * top / SWIM_DEPTH)
 
 
 def texture_names_of(row, strings):
@@ -442,6 +461,9 @@ def main():
     if clash:
         sys.exit("display ids already in the base CreatureDisplayInfo.dbc: %s" % ", ".join(clash[:10]))
     base_models = {r[0] for r in cmd_rows}
+    waterline = pack.get("swim_waterline")
+    if pack.get("swim_models") and not waterline:
+        sys.exit("pack.json: swim_models needs a swim_waterline")
 
     # Textures per model slot, for looks retail leaves blank (Haranir: the player's own skin).
     slot_fallback = collections.defaultdict(dict)
@@ -475,7 +497,7 @@ def main():
     warnings = []
     sql_rows = []
     new_cmd, new_cdi = [], []  # rows added to the client DBCs, mirrored into the server's *_dbc tables
-    client_cmd = {}  # the client's own model rows the server lacks, by id: mirrored too
+    client_cmd = {}  # the client's own model rows the server lacks or swim_models changes, by id: mirrored too
     for l in looks:
         display = int(l["display"])
         if pack["transmog"]:
@@ -639,6 +661,8 @@ def main():
                 row[6] = row[13] = 0  # FootprintTextureID, SoundID
             for k in range(6):
                 row[17 + k] = f32(rm["GeoBox_%d" % k])
+            if waterline:
+                float_at(row, waterline)
             cmd_rows.append(row)
             new_cmd.append((row, model_path))
             variants[key] = (model_id, folder, stem)
@@ -723,6 +747,15 @@ def main():
                     cdi[1] = after
             row[0] = after
             ours.add(after)
+
+    # The client's own form models float higher too, and the server gets their rows. After the
+    # looks, which clone these rows: each look's own height decides where it floats.
+    for model in pack.get("swim_models", ()):
+        row = next((r for r in cmd_rows if r[0] == model), None)
+        if row is None:
+            sys.exit("swim_models: model %d isn't in the base CreatureModelData.dbc" % model)
+        float_at(row, waterline)
+        client_cmd[model] = (list(row), cmd_str[row[2]:cmd_str.index(b"\0", row[2])].decode("latin-1"))
 
     write_dbc(os.path.join(args.work, "CreatureDisplayInfo.dbc"), cdi_rows, cdi_str, cdi_fields)
     write_dbc(os.path.join(args.work, "CreatureModelData.dbc"), cmd_rows, cmd_str, cmd_fields)
@@ -855,7 +888,8 @@ def write_dbc_sql(f, new_cdi, new_cmd, client_cmd):
         f.write("DELETE FROM `creaturemodeldata_dbc` WHERE `ID` BETWEEN %d AND %d;\n" % (min(mids), max(mids)))
         f.write(cmd_insert + cmd_values(new_cmd))
     if client_cmd:
-        f.write("-- The client's own model rows these looks use that the stock tables lack.\n")
+        f.write("-- The client's own model rows these looks use that the stock tables lack, and the form models\n"
+                "-- the pack floats higher in water (swim_models).\n")
         f.write("DELETE FROM `creaturemodeldata_dbc` WHERE `ID` IN (%s);\n" % ", ".join(str(r[0]) for r, _n in client_cmd))
         f.write(cmd_insert + cmd_values(client_cmd))
     f.write("DELETE FROM `creature_model_info` WHERE `DisplayID` BETWEEN %d AND %d;\n" % (min(ids), max(ids)))
