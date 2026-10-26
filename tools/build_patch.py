@@ -35,7 +35,7 @@ import sys
 import fetch
 from check_m2 import check
 from fetch import casc, customization_textures, db2, db2_rows, listfile
-from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, skin_mismatches
+from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, inline_skeleton, skin_mismatches
 
 # A pack's pack.json: its data file, where its models go in the client, its id blocks and the
 # stock display each kind of look clones for sounds, blood, footprints and size class.
@@ -320,7 +320,7 @@ def load_model(cache, fdid, stem, warnings):
     version of the model (it mixes builds); such a model is taken from Blizzard's CDN instead,
     model, skins and animations together, since they have to come from one build."""
     for source in (None, "cdn"):
-        raw = casc(cache, fdid, source)
+        raw = inline_skeleton(casc(cache, fdid, source), lambda f: casc(cache, f, source))
         m = Retail(raw)
         skin_raw = casc(cache, m.sfid[0], source)
         if not skin_mismatches(m, Skin(skin_raw)):
@@ -461,7 +461,8 @@ def main():
         fdids = set()
         for l in looks:
             if l["retail_display"]:
-                model = Retail(casc(args.cache, int(cmd_r[cdi_r[l["retail_display"]]["ModelID"]]["FileDataID"])))
+                model = Retail(inline_skeleton(casc(args.cache, int(cmd_r[cdi_r[l["retail_display"]]["ModelID"]]["FileDataID"])),
+                                               lambda f: casc(args.cache, f)))
                 fdids.update(model.txid)
         texture_names = listfile(args.cache, fdids)
 

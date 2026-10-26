@@ -39,7 +39,7 @@ from PIL import Image
 from build_patch import MASK_WORDS
 from census import read_dbc_ids
 from fetch import casc, customization_textures, db2_rows, listfile
-from m2creature import ARRAYS, Converter, Retail, SkinOverflow
+from m2creature import ARRAYS, Converter, Retail, SkinOverflow, inline_skeleton
 
 PET_TYPES = ("Humanoid", "Dragonkin", "Flying", "Undead", "Critter", "Magic", "Elemental", "Beast", "Aquatic",
              "Mechanical")
@@ -364,7 +364,7 @@ def convert_variant(cache, valid, fdid, geosets, stem, chosen=()):
     """Converts one retail model with one geoset choice the way build_patch.py does (chosen:
     the display's customization textures, as (texture type, file id) pairs). Returns the
     posed 3.3.5a model and {texture index: (file id, flags)} for its fixed (non-look) textures."""
-    raw = casc(cache, fdid)
+    raw = inline_skeleton(casc(cache, fdid), lambda f: casc(cache, f))
     m = Retail(raw)
     anims = {}
     for a, s, f in m.afid:

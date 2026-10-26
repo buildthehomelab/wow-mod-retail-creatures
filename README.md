@@ -76,7 +76,10 @@ Nothing from Blizzard is stored here or in the packs; the files come from
 - `tools/census.py` lists every retail mount and battle pet against a client: which it already
   has, which need only textures, which need a converted model, and what the converter makes of
   each of those (it converts them all, animations and textures included, without building a
-  patch). `tools/client_files.py` writes what it needs to know about the client: the list of
+  patch). `--also <tsv>` (any file with a `retail_display` column) probes the models of those
+  looks too, though the client has them or they are no creature model: for a pack that wants
+  them as its own looks (wow-mod-retail-library does, for mounts the client lacks on models it
+  has). `tools/client_files.py` writes what it needs to know about the client: the list of
   its `Creature\` files, and the three creature DBCs the client ends up using, which are also
   the ones `build_patch.py --dbc` wants.
 - `tools/contact_sheet.py` turns a census into a review page: every look that needs a converted
@@ -218,6 +221,10 @@ module uses.
   the client; the converter refuses one (`StaleSkin`), and `build_patch.py` then takes that
   model, its skin and animations from Blizzard's CDN on its own (a warning says so), so the
   CDN's indexes get downloaded the first time it happens.
+- **"shared skeleton ... not supported"**: the model keeps its bones and animations in a
+  `.skel` file. The converter takes them in (the Tauralus mounts, and armoured ones whose
+  skeleton is a child of the plain one's) unless the skeleton's animations are in `.anim`
+  files or its bones differ from its parent's (the gnome skeleton pet).
 
 ## Credits
 

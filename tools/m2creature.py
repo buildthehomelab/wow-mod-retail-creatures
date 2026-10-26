@@ -98,6 +98,107 @@ def u32s(blob):
     return list(struct.unpack("<%dI" % (len(blob) // 4), blob))
 
 
+def header_offsets():
+    """{header array name: its offset in the MD21 chunk}."""
+    out, o = {}, 8
+    for name, kind in ARRAYS:
+        out[name] = o
+        o += 8 if kind == "a" else 4 if kind == "u" else struct.calcsize("<" + kind)
+    return out
+
+
+BONE_SIZE, BONE_TRACKS = 88, (16, 36, 56)
+ATTACHMENT_SIZE, ATTACHMENT_TRACKS = 40, (20,)
+
+
+def inline_skeleton(data, load):
+    """A model whose bones, sequences and attachments are in a shared skeleton file (SKID: the
+    Tauralus mounts) as one that has them itself. load(file data id) gives a file's bytes.
+
+    The skeleton's chunks (SKS1 global loops, sequences and their lookup; SKB1 bones and key
+    bone lookup; SKA1 attachments and their lookup) go after the model's own data, every offset
+    in them moved by where they land: their arrays, the tracks' arrays, and the keyframes of
+    the sequences stored in the skeleton (keyframes in .anim files stay where they are). A
+    skeleton with a parent (SKPD) is the parent's rig with sequences of its own; it is taken
+    as the parent, whose sequences are the full set, when every bone is the same in both (key
+    bone, parent, submesh, name hash and pivot; the flags may differ).
+    Skeletons whose animations are in .anim files are refused."""
+    ch = chunks(data)
+    if "SKID" not in ch:
+        return data
+    skel = chunks(load(struct.unpack_from("<I", ch["SKID"], 0)[0]))
+    if "SKPD" in skel:
+        parent = chunks(load(struct.unpack_from("<I", skel["SKPD"], 8)[0]))
+        if "SKPD" in parent:
+            raise ValueError("shared skeleton with a grandparent not supported")
+
+        def rig(sk):
+            n, off = struct.unpack_from("<II", sk["SKB1"], 0)
+            b = sk["SKB1"]
+            return [(b[off + i * BONE_SIZE:off + i * BONE_SIZE + 4], b[off + i * BONE_SIZE + 8:off + i * BONE_SIZE + 16],
+                     b[off + i * BONE_SIZE + 76:off + (i + 1) * BONE_SIZE]) for i in range(n)]
+        if rig(skel) != rig(parent):
+            raise ValueError("shared skeleton whose bones differ from its parent's not supported")
+        skel = parent
+    if "AFID" in skel:
+        raise ValueError("shared skeleton with .anim files not supported")
+    md = bytearray(ch["MD21"])
+    at = header_offsets()
+
+    def put(blob):
+        while len(md) % 16:
+            md.append(0)
+        base = len(md)
+        md.extend(blob)
+        return base
+
+    def array(base, field, name):
+        n, off = struct.unpack_from("<II", md, base + field)
+        struct.pack_into("<II", md, at[name], n, base + off if n else 0)
+        return n, base + off
+
+    def tracks(base, n, rec_at, size, offsets, in_file):
+        for i in range(n):
+            for t in offsets:
+                p = rec_at + i * size + t
+                _interp, gseq, tsn, tso, vn, vo = struct.unpack_from(TRACK, md, p)
+                struct.pack_into("<IIII", md, p + 4, tsn, base + tso if tsn else 0, vn, base + vo if vn else 0)
+                for arr_n, arr_at in ((tsn, base + tso), (vn, base + vo)):
+                    for k in range(arr_n):
+                        cnt, off = struct.unpack_from("<II", md, arr_at + 8 * k)
+                        if cnt and (gseq != -1 or in_file(k)):
+                            struct.pack_into("<I", md, arr_at + 8 * k + 4, base + off)
+
+    seqs = []
+    if "SKS1" in skel:
+        base = put(skel["SKS1"])
+        array(base, 0, "global_loops")
+        n, seq_at = array(base, 8, "sequences")
+        seqs = [struct.unpack_from(SEQUENCE, md, seq_at + i * struct.calcsize(SEQUENCE)) for i in range(n)]
+        array(base, 16, "sequence_lookup")
+
+    def in_file(k):
+        return k < len(seqs) and seqs[k][4] & SEQ_IN_M2
+    if "SKB1" in skel:
+        base = put(skel["SKB1"])
+        n, bones_at = array(base, 0, "bones")
+        array(base, 8, "key_bone_lookup")
+        tracks(base, n, bones_at, BONE_SIZE, BONE_TRACKS, in_file)
+    if "SKA1" in skel:
+        base = put(skel["SKA1"])
+        n, att_at = array(base, 0, "attachments")
+        array(base, 8, "attachment_lookup")
+        tracks(base, n, att_at, ATTACHMENT_SIZE, ATTACHMENT_TRACKS, in_file)
+    out = b""
+    for tag, blob in ch.items():
+        if tag == "SKID":
+            continue
+        if tag == "MD21":
+            blob = bytes(md)
+        out += struct.pack("<4sI", tag.encode("latin-1"), len(blob)) + blob
+    return out
+
+
 class Retail:
     def __init__(self, data):
         if data[:4] != b"MD21":

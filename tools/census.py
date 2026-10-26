@@ -10,11 +10,15 @@ AnimationData.dbc.
 Without --models only the retail tables and the listfile are read. With it, every model the
 client lacks is downloaded with its skin, animations and textures and converted, as a patch
 build would. That is tens of thousands of files: run it with RETAIL_SOURCE=cdn.
+--also names tsv files with a retail_display column (a pack's wish list, such as
+wow-mod-retail-collection's wanted-looks.tsv): the models of those looks are probed too, even
+when the client has them or they are no creature model, for a pack that wants them as its own.
 Writes displays.tsv (one row per mount or pet display), models.tsv (one row per model) and
 models.json (everything probe() found).
 """
 import argparse
 import collections
+import csv
 import concurrent.futures
 import json
 import os
@@ -24,7 +28,7 @@ import zlib
 from build_patch import shrink_blp
 from check_m2 import check
 from fetch import casc, db2, db2_rows, listfile
-from m2creature import ARRAYS, Converter, Retail, SkinOverflow, chunks
+from m2creature import ARRAYS, Converter, Retail, SkinOverflow, chunks, inline_skeleton
 from tact import Encrypted
 
 PET_HIDDEN = 0x20  # BattlePetSpecies.Flags: not in the pet journal
@@ -48,7 +52,7 @@ def header(md):
     return h
 
 
-def probe(cache, fdid, valid, display_textures):
+def probe(cache, fdid, valid, display_textures, effects=False):
     """One model: what it is made of, and what the converter makes of it (animations and
     textures included, so the sizes are the patch's)."""
     r = {"fdid": fdid}
@@ -72,8 +76,7 @@ def probe(cache, fdid, valid, display_textures):
     reasons = []
     if r["combos"]:
         reasons.append("texture combiner combos")
-    if r["skel"]:
-        reasons.append("shared skeleton")
+    if r["skel"]:  # converted with its skeleton inlined (inline_skeleton)
         try:
             sk = chunks(casc(cache, struct.unpack("<I", ch["SKID"][:4])[0]))
             if "SKB1" in sk:
@@ -91,6 +94,7 @@ def probe(cache, fdid, valid, display_textures):
         r["result"] = " + ".join(reasons)
         return r
     try:
+        raw = inline_skeleton(raw, lambda f: casc(cache, f))
         m = Retail(raw)
         anims, lost = {}, 0
         for a, s, f in m.afid:
@@ -100,7 +104,7 @@ def probe(cache, fdid, valid, display_textures):
                 except Exception:
                     lost += 1
         for lod, skin_id in enumerate(m.sfid):  # skin 0, or a lower-detail one when it overflows
-            conv = Converter(raw, casc(cache, skin_id), anims, valid, "census")
+            conv = Converter(raw, casc(cache, skin_id), anims, valid, "census", effects=effects)
             drawn = conv.batch_textures({})
             textures, tex = [], set(display_textures)
             for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
@@ -135,7 +139,7 @@ def probe(cache, fdid, valid, display_textures):
         r["result"] = "ok" if not errors else "check: %s" % str(errors[0])[:80]
     except Exception as e:
         msg = str(e) or type(e).__name__
-        for key in ("retail skin has", "overflows 16 bits", "past 16 bits", "track with"):
+        for key in ("retail skin has", "overflows 16 bits", "past 16 bits", "track with", "shared skeleton"):
             if key in msg:
                 msg = key
         r["result"] = unavailable(e) if isinstance(e, (KeyError, Encrypted)) else "convert: %s" % msg[:80]
@@ -157,6 +161,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--models", action="store_true")
     ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--effects", action="store_true",
+                    help="convert with effects, as a pack with \"effects\": true builds (the library does)")
+    ap.add_argument("--also", action="append", default=[],
+                    help="tsv with a retail_display column: probe these looks' models too (repeatable)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     client = json.load(open(os.path.join(args.client, "client-files.json")))
@@ -260,10 +268,19 @@ def main():
         sum(1 for m in new.values() if m["pet"] and m["mount"])))
     if not args.models:
         return
+    # The models of looks a pack asked for by name are probed whatever their status.
+    also = set()
+    for path in args.also:
+        with open(path, encoding="utf-8") as f:
+            also.update(r["retail_display"] for r in csv.DictReader(f, delimiter="\t"))
+    probed = dict(new)
+    probed.update((fd, m) for fd, m in models.items() if m["displays"] & also)
+    if also:
+        print("%d more models probed for the looks in %s" % (len(probed) - len(new), ", ".join(args.also)))
 
     results = {}
     with concurrent.futures.ThreadPoolExecutor(args.workers) as ex:
-        futs = {ex.submit(probe, args.cache, fd, valid, new[fd]["textures"]): fd for fd in sorted(new)}
+        futs = {ex.submit(probe, args.cache, fd, valid, probed[fd]["textures"], args.effects): fd for fd in sorted(probed)}
         for n, fut in enumerate(concurrent.futures.as_completed(futs), 1):
             results[futs[fut]] = fut.result()
             if n % 50 == 0:
@@ -274,8 +291,8 @@ def main():
             "m2_bytes", "out_bytes", "out_packed", "chunks")
     with open(os.path.join(args.out, "models.tsv"), "w", encoding="utf-8") as f:
         f.write("model_fdid\tmodel\tmounts\tpets\tdisplays\tfourth_texture\tgeoset_displays\t" + "\t".join(cols) + "\n")
-        for fd in sorted(new):
-            m, r = new[fd], results[fd]
+        for fd in sorted(probed):
+            m, r = probed[fd], results[fd]
             f.write("\t".join(str(x) for x in (
                 fd, m["path"], len(m["mount"]), len(m["pet"]), len(m["displays"]), m["tex4"], m["geosets"],
                 *(r.get(c, "") for c in cols))) + "\n")
@@ -283,8 +300,8 @@ def main():
     print("\nconverter verdict per model (models / mounts / pets it carries):")
     for s, n in by.most_common():
         fds = [fd for fd, r in results.items() if r["result"] == s]
-        print("  %-52s %4d / %4d / %4d" % (s, n, len(set().union(*(new[fd]["mount"] for fd in fds))),
-                                              len(set().union(*(new[fd]["pet"] for fd in fds)))))
+        print("  %-52s %4d / %4d / %4d" % (s, n, len(set().union(*(probed[fd]["mount"] for fd in fds))),
+                                              len(set().union(*(probed[fd]["pet"] for fd in fds)))))
     ok = {fd: r for fd, r in results.items() if r["result"] == "ok"}
     tex = {}
     for r in ok.values():
