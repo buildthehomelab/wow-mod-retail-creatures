@@ -38,8 +38,8 @@ from PIL import Image
 
 from build_patch import MASK_WORDS
 from census import read_dbc_ids
-from fetch import casc, customization_textures, db2_rows, listfile
-from m2creature import ARRAYS, Converter, Retail, SkinOverflow
+from fetch import casc, customization_geosets, customization_textures, db2_rows, listfile
+from m2creature import ARRAYS, Converter, Retail, SkinOverflow, inline_skeleton
 
 PET_TYPES = ("Humanoid", "Dragonkin", "Flying", "Undead", "Critter", "Magic", "Elemental", "Beast", "Aquatic",
              "Mechanical")
@@ -364,7 +364,7 @@ def convert_variant(cache, valid, fdid, geosets, stem, chosen=()):
     """Converts one retail model with one geoset choice the way build_patch.py does (chosen:
     the display's customization textures, as (texture type, file id) pairs). Returns the
     posed 3.3.5a model and {texture index: (file id, flags)} for its fixed (non-look) textures."""
-    raw = casc(cache, fdid)
+    raw = inline_skeleton(casc(cache, fdid), lambda f: casc(cache, f))
     m = Retail(raw)
     anims = {}
     for a, s, f in m.afid:
@@ -503,6 +503,9 @@ def main():
         geo[g["CreatureDisplayInfoID"]][int(g["GeosetIndex"]) + 1] = int(g["GeosetValue"])
     pet_type = {p["ID"]: int(p["PetTypeEnum"]) for p in db2_rows(args.cache, "BattlePetSpecies")}
     custom = customization_textures(args.cache)
+    for display, chosen_geosets in customization_geosets(args.cache).items():
+        if display not in geo:
+            geo[display] = chosen_geosets
     family = {}
     if args.families:
         for line in open(args.families, encoding="utf-8").read().splitlines()[1:]:
@@ -516,7 +519,9 @@ def main():
     fallback = collections.defaultdict(dict)
     for line in open(os.path.join(args.census, "displays.tsv"), encoding="utf-8").read().splitlines()[1:]:
         kind, thing, name, display, fdid, path, status, tex, _geosets = line.split("\t")
-        if status != "new model" or (only and display not in only):
+        # --only draws the named looks whatever their status (a pack may convert a model the
+        # client has); without it, the looks that need a converted model.
+        if (only and display not in only) or (not only and status != "new model"):
             continue
         tex = [int(t) for t in tex.split(",")]
         for k in range(3):
@@ -531,7 +536,8 @@ def main():
                               "geo": bool(geo.get(display)), "nomove": result.get("no_basic") or []}
             if result.get("result") == "ok":
                 variants[(int(fdid), tuple(sorted(geo.get(display, {}).items())), stem,
-                          tuple(sorted(custom.get(display, {}).items())))].append((display, tex[:3]))
+                          tuple(sorted((t, fd) for t, fd in custom.get(display, {}).items() if not 11 <= t <= 13)))].append(
+                    (display, [t or custom.get(display, {}).get(11 + k, 0) for k, t in enumerate(tex[:3])]))
         t = tiles[display]
         if name not in t["names"]:
             t["names"].append(name)

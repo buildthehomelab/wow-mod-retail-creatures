@@ -102,19 +102,10 @@ def listfile(cache, wanted, prefixes=None):
     return out
 
 
-def customization_textures(cache):
-    """{retail display: {texture type: file id}} for displays that are a ChrModel (a customizable
-    mount like the Steel Prototype Panther MK-0). Their model leaves its body texture (type 1)
-    without a file, and the display names none: retail fills it from the model's customization
-    options, each set to its first choice. Creature skin slots (types 11-13) are left out: those
-    come from the display."""
+def _chosen_elements(cache):
+    """({ChrModel id: row}, {ChrModel id: [ChrCustomizationElement rows of its chosen choices]}):
+    each customization option of a ChrModel set to its first choice."""
     models = {r["ID"]: r for r in db2_rows(cache, "ChrModel")}
-    layer_type = {}  # (texture layout, texture target): texture type, lowest layer first
-    for r in sorted(db2_rows(cache, "ChrModelTextureLayer"), key=lambda r: int(r["Layer"])):
-        for k in range(2):
-            target = r["ChrModelTextureTargetID_%d" % k]
-            if target != "0":
-                layer_type.setdefault((r["CharComponentTextureLayoutsID"], target), int(r["TextureType"]))
     model_of = {o["ID"]: o["ChrModelID"] for o in db2_rows(cache, "ChrCustomizationOption")
                 if o["ChrModelID"] in models}
     first = {}  # option: its first choice
@@ -123,13 +114,30 @@ def customization_textures(cache):
         if o in model_of and (o not in first or int(c["OrderIndex"]) < int(first[o]["OrderIndex"])):
             first[o] = c
     chosen = {c["ID"]: model_of[o] for o, c in first.items()}
-    material_of = collections.defaultdict(list)  # ChrModel: its chosen materials
+    elements = collections.defaultdict(list)
     for e in db2_rows(cache, "ChrCustomizationElement"):
         related = e["RelatedChrCustomizationChoiceID"]
-        if e["ChrCustomizationChoiceID"] in chosen and e["ChrCustomizationMaterialID"] != "0" \
-                and (related == "0" or related in chosen):
-            material_of[chosen[e["ChrCustomizationChoiceID"]]].append(e["ChrCustomizationMaterialID"])
-    if not material_of:
+        if e["ChrCustomizationChoiceID"] in chosen and (related == "0" or related in chosen):
+            elements[chosen[e["ChrCustomizationChoiceID"]]].append(e)
+    return models, elements
+
+
+def customization_textures(cache):
+    """{retail display: {texture type: file id}} for displays that are a ChrModel (a customizable
+    mount like the Steel Prototype Panther MK-0). Their model leaves its body texture (type 1)
+    without a file, and the display names none: retail fills it from the model's customization
+    options, each set to its first choice. Creature skin slots (types 11-13) are in it too, for
+    a display that leaves its slot empty (the Algarian Stormrider's)."""
+    models, elements = _chosen_elements(cache)
+    layer_type = {}  # (texture layout, texture target): texture type, lowest layer first
+    for r in sorted(db2_rows(cache, "ChrModelTextureLayer"), key=lambda r: int(r["Layer"])):
+        for k in range(2):
+            target = r["ChrModelTextureTargetID_%d" % k]
+            if target != "0":
+                layer_type.setdefault((r["CharComponentTextureLayoutsID"], target), int(r["TextureType"]))
+    material_of = {m: [e["ChrCustomizationMaterialID"] for e in es if e["ChrCustomizationMaterialID"] != "0"]
+                   for m, es in elements.items()}
+    if not any(material_of.values()):
         return {}
     materials = db2(cache, "ChrCustomizationMaterial")
     texture_of = {}
@@ -142,6 +150,25 @@ def customization_textures(cache):
             m = materials.get(mat)
             ttype = m and layer_type.get((model["CharComponentTextureLayoutID"], m["ChrModelTextureTargetID"]))
             fd = m and texture_of.get(m["MaterialResourcesID"])
-            if ttype and fd and not 11 <= ttype <= 13:
+            if ttype and fd:
                 out.setdefault(model["DisplayID"], {}).setdefault(ttype, fd)
     return out
+
+
+def customization_geosets(cache):
+    """{retail display: {geoset group: variant}} for displays that are a ChrModel: the geosets
+    of each customization option's first choice (a drake's horns, an airship's hull). Unlike a
+    creature's, a ChrModel's group 0 holds alternatives too: only 0 and the chosen one show
+    (see m2creature.Converter.shows)."""
+    models, elements = _chosen_elements(cache)
+    geosets = {r["ID"]: r for r in db2_rows(cache, "ChrCustomizationGeoset")}
+    out = {}
+    for model_id, es in elements.items():
+        for e in es:
+            g = geosets.get(e["ChrCustomizationGeosetID"])
+            if g and e["ChrCustomizationGeosetID"] != "0":
+                out.setdefault(models[model_id]["DisplayID"], {}).setdefault(int(g["GeosetType"]), int(g["GeosetID"]))
+    # Variant 1 of a group past 0 is what a look shows anyway: left out, so a look whose choices
+    # are all defaults converts the same as before (and shares its model).
+    out = {d: {k: v for k, v in g.items() if k == 0 or v != 1} for d, g in out.items()}
+    return {d: g for d, g in out.items() if g}

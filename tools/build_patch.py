@@ -34,8 +34,8 @@ import sys
 
 import fetch
 from check_m2 import check
-from fetch import casc, customization_textures, db2, db2_rows, listfile
-from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, skin_mismatches
+from fetch import casc, customization_geosets, customization_textures, db2, db2_rows, listfile
+from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, inline_skeleton, skin_mismatches
 
 # A pack's pack.json: its data file, where its models go in the client, its id blocks and the
 # stock display each kind of look clones for sounds, blood, footprints and size class.
@@ -60,6 +60,10 @@ from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, skin_mi
 #   archives        {kind of look: MPQ file name}: with --data-dir, each kind's models and textures
 #                   go into their own archive there, and --out holds the two DBCs only. The big
 #                   archives then never change when another patch's DBC rows do
+#   customization_geosets  true: a customizable model's display (a ChrModel: dragonriding drakes,
+#                   airships) shows the geosets of each customization option's first choice, where
+#                   retail's display names none (see fetch.customization_geosets). Without it every
+#                   alternative part in such a model's group 0 is drawn at once
 #   effects         true: keep particle emitters, ribbons, lights and the glow and shine passes
 #                   (see m2creature.py). Looks whose emitters take the display's particle colours
 #                   get their retail ParticleColor rows, added to the ParticleColor.dbc in --dbc
@@ -320,7 +324,7 @@ def load_model(cache, fdid, stem, warnings):
     version of the model (it mixes builds); such a model is taken from Blizzard's CDN instead,
     model, skins and animations together, since they have to come from one build."""
     for source in (None, "cdn"):
-        raw = casc(cache, fdid, source)
+        raw = inline_skeleton(casc(cache, fdid, source), lambda f: casc(cache, f, source))
         m = Retail(raw)
         skin_raw = casc(cache, m.sfid[0], source)
         if not skin_mismatches(m, Skin(skin_raw)):
@@ -417,6 +421,12 @@ def main():
     for g in db2_rows(args.cache, "CreatureDisplayInfoGeosetData"):
         geo[g["CreatureDisplayInfoID"]][int(g["GeosetIndex"]) + 1] = int(g["GeosetValue"])
     custom = customization_textures(args.cache)
+    # A customizable mount's geosets come from its customization choices too, where its display
+    # names none (pack option customization_geosets).
+    if pack.get("customization_geosets"):
+        for display, chosen_geosets in customization_geosets(args.cache).items():
+            if display not in geo:
+                geo[display] = chosen_geosets
 
     valid = {r[0] for r in read_dbc(os.path.join(args.dbc, "AnimationData.dbc"))[0]}
     cdi_rows, cdi_str, cdi_fields = read_dbc(os.path.join(args.dbc, "CreatureDisplayInfo.dbc"))
@@ -461,7 +471,8 @@ def main():
         fdids = set()
         for l in looks:
             if l["retail_display"]:
-                model = Retail(casc(args.cache, int(cmd_r[cdi_r[l["retail_display"]]["ModelID"]]["FileDataID"])))
+                model = Retail(inline_skeleton(casc(args.cache, int(cmd_r[cdi_r[l["retail_display"]]["ModelID"]]["FileDataID"])),
+                                               lambda f: casc(args.cache, f)))
                 fdids.update(model.txid)
         texture_names = listfile(args.cache, fdids)
 
@@ -513,10 +524,18 @@ def main():
         geosets = tuple(sorted(geo.get(l["retail_display"], {}).items()))
         # Meshes drawn with these retail textures are left out (a mount's saddle, for a look
         # without it): retail draws them always, they're no geoset the client could hide.
-        hide = tuple(sorted({int(x) for x in l.get("hide", "").split(",") if x}))
+        # s0-s2 name a creature skin slot instead: the meshes drawn with it go, for a look that
+        # leaves the slot empty where retail then draws nothing (a horse without the banner its
+        # model carries), rather than borrowing another look's texture.
+        hide_names = [x for x in l.get("hide", "").split(",") if x]
+        hide_slots = sorted({int(x[1:]) for x in hide_names if x.startswith("s")})
+        hide = tuple(sorted({int(x) for x in hide_names if not x.startswith("s")})) + tuple("s%d" % k for k in hide_slots)
         folder = "%s\\%s" % (pack["root"], l.get("folder") or folder_name(l["model"]))
         # A customizable mount's body textures come from its customization choices (see fetch.py).
         chosen = custom.get(l["retail_display"], {})
+        # Skin slot choices fill the display row only (below), never the model.
+        chosen_slots = {t: fd for t, fd in chosen.items() if 11 <= t <= 13}
+        chosen = {t: fd for t, fd in chosen.items() if t not in chosen_slots}
         key = (fdid, geosets, hide, tuple(sorted(chosen.items())))
         if key not in variants:
             stem = folder_name(l["model"])
@@ -533,19 +552,20 @@ def main():
                         w in os.path.basename(texture_names.get(fd, "")) for w in MASK_WORDS)}
                 return c
 
-            missing = set(hide) - set(m.txid)
+            missing = {x for x in hide if not isinstance(x, str)} - set(m.txid)
             if missing:
                 sys.exit("%d %s: hide names textures the model doesn't have: %s" % (
                     display, l["name"], ", ".join(map(str, sorted(missing)))))
             # Skin 0 unless the mesh drawn overflows it: then the next, lower-detail skin.
             while True:
                 conv = converter()
-                hidden = {i for i, fd in enumerate(m.txid) if fd in hide}
+                hidden = {i for i, fd in enumerate(m.txid) if fd in hide} | {
+                    i for i, (ttype, *_r) in enumerate(m.arr("textures", "<IIII")) if ttype - 11 in hide_slots}
                 drawn = conv.batch_textures(dict(geosets), hidden) if pack["prune_textures"] else None
                 textures, slots, tex_files, tex_warnings = [], set(), {}, []
                 for i, (ttype, tflags, _n, _o) in enumerate(m.arr("textures", "<IIII")):
                     fd = (m.txid[i] if i < len(m.txid) else 0) or chosen.get(ttype, 0)
-                    if i < len(m.txid) and m.txid[i] in hide:
+                    if i in hidden:
                         textures.append((None, tflags, None))  # not drawn: its meshes go
                         continue
                     if drawn is not None and i not in drawn:
@@ -670,7 +690,9 @@ def main():
                 if fd:
                     warnings.append("%d %s: texture slot %d borrowed from another look" % (display, l["name"], k))
                 else:
-                    warnings.append("%d %s: texture slot %d has no texture (renders white)" % (display, l["name"], k))
+                    fd = chosen_slots.get(11 + k, 0)  # a customizable mount's slot, from its choices
+                    if not fd:
+                        warnings.append("%d %s: texture slot %d has no texture (renders white)" % (display, l["name"], k))
             if fd:
                 files["%s\\T%d.blp" % (folder, fd)] = ("tex", fd)
                 row[6 + k] = add_string(cdi_str, "T%d" % fd)

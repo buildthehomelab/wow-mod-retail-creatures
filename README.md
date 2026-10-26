@@ -76,7 +76,10 @@ Nothing from Blizzard is stored here or in the packs; the files come from
 - `tools/census.py` lists every retail mount and battle pet against a client: which it already
   has, which need only textures, which need a converted model, and what the converter makes of
   each of those (it converts them all, animations and textures included, without building a
-  patch). `tools/client_files.py` writes what it needs to know about the client: the list of
+  patch). `--also <tsv>` (any file with a `retail_display` column) probes the models of those
+  looks too, though the client has them or they are no creature model: for a pack that wants
+  them as its own looks (wow-mod-retail-library does, for mounts the client lacks on models it
+  has). `tools/client_files.py` writes what it needs to know about the client: the list of
   its `Creature\` files, and the three creature DBCs the client ends up using, which are also
   the ones `build_patch.py --dbc` wants.
 - `tools/contact_sheet.py` turns a census into a review page: every look that needs a converted
@@ -157,6 +160,7 @@ A pack repo holds:
   | `transmog` | `false`: no rows for mod-transmog-plus and no preview creatures, so the SQL is the DBC rows only (`preview_base`, `subname` and `sort_base` can then be left out) |
   | `plain` | `true`: the new rows carry no sounds and no footprints, since hundreds of unlike models can't all sound like the one stock creature their kind clones |
   | `effects` | `true`: keep particle emitters, ribbons, lights and the glow and shine passes; looks whose particles take the display's colours get ParticleColor rows (put the client's `ParticleColor.dbc` in `--dbc`) |
+  | `customization_geosets` | `true`: a customizable model's look (a ChrModel display: dragonriding drakes, Delver's airships) shows the parts of each customization option's first choice, where retail's display names none; without it every alternative part (all the horns at once) is drawn |
   | `archives` | each kind of look and the MPQ its models and textures go into; with `--data-dir`, those archives are written there and `--out` holds the two DBCs only, so the big archives don't change when another patch's DBC rows do. Two kinds can name the same archive |
 
 - The data file, tab-separated, one look per row: `display` (the 3.3.5 display id; never change
@@ -177,6 +181,9 @@ A pack repo holds:
 - `hide` on a converted look (retail texture file ids, comma-separated) leaves out every mesh
   drawn with those textures: a mount's saddle, say, which retail always draws (it's no geoset).
   The look gets a model of its own, so other looks on that retail model keep those meshes.
+  `s0`, `s1` or `s2` in it names a creature skin slot instead: for a look that leaves that slot
+  empty, where retail draws nothing (a horse without the banner its model carries), in place of
+  borrowing another look's texture for it.
 - A script that writes the data file from retail's tables (`fetch.py` has the downloads), if the
   list isn't kept by hand.
 - For the server: the generated SQL under `data/sql/db-world/`, and `src/<module>_loader.cpp`
@@ -218,6 +225,10 @@ module uses.
   the client; the converter refuses one (`StaleSkin`), and `build_patch.py` then takes that
   model, its skin and animations from Blizzard's CDN on its own (a warning says so), so the
   CDN's indexes get downloaded the first time it happens.
+- **"shared skeleton ... not supported"**: the model keeps its bones and animations in a
+  `.skel` file. The converter takes them in (the Tauralus mounts, and armoured ones whose
+  skeleton is a child of the plain one's) unless the skeleton's animations are in `.anim`
+  files or its bones differ from its parent's (the gnome skeleton pet).
 
 ## Credits
 
