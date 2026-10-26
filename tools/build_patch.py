@@ -34,7 +34,7 @@ import sys
 
 import fetch
 from check_m2 import check
-from fetch import casc, customization_textures, db2, db2_rows, listfile
+from fetch import casc, customization_geosets, customization_textures, db2, db2_rows, listfile
 from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, inline_skeleton, skin_mismatches
 
 # A pack's pack.json: its data file, where its models go in the client, its id blocks and the
@@ -417,6 +417,11 @@ def main():
     for g in db2_rows(args.cache, "CreatureDisplayInfoGeosetData"):
         geo[g["CreatureDisplayInfoID"]][int(g["GeosetIndex"]) + 1] = int(g["GeosetValue"])
     custom = customization_textures(args.cache)
+    # A customizable mount's geosets come from its customization choices too, where its display
+    # names none.
+    for display, chosen_geosets in customization_geosets(args.cache).items():
+        if display not in geo:
+            geo[display] = chosen_geosets
 
     valid = {r[0] for r in read_dbc(os.path.join(args.dbc, "AnimationData.dbc"))[0]}
     cdi_rows, cdi_str, cdi_fields = read_dbc(os.path.join(args.dbc, "CreatureDisplayInfo.dbc"))
@@ -518,6 +523,9 @@ def main():
         folder = "%s\\%s" % (pack["root"], l.get("folder") or folder_name(l["model"]))
         # A customizable mount's body textures come from its customization choices (see fetch.py).
         chosen = custom.get(l["retail_display"], {})
+        # Skin slot choices fill the display row only (below), never the model.
+        chosen_slots = {t: fd for t, fd in chosen.items() if 11 <= t <= 13}
+        chosen = {t: fd for t, fd in chosen.items() if t not in chosen_slots}
         key = (fdid, geosets, hide, tuple(sorted(chosen.items())))
         if key not in variants:
             stem = folder_name(l["model"])
@@ -671,7 +679,9 @@ def main():
                 if fd:
                     warnings.append("%d %s: texture slot %d borrowed from another look" % (display, l["name"], k))
                 else:
-                    warnings.append("%d %s: texture slot %d has no texture (renders white)" % (display, l["name"], k))
+                    fd = chosen_slots.get(11 + k, 0)  # a customizable mount's slot, from its choices
+                    if not fd:
+                        warnings.append("%d %s: texture slot %d has no texture (renders white)" % (display, l["name"], k))
             if fd:
                 files["%s\\T%d.blp" % (folder, fd)] = ("tex", fd)
                 row[6 + k] = add_string(cdi_str, "T%d" % fd)

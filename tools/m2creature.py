@@ -729,9 +729,12 @@ class Converter:
 
     def shows(self, submesh_id):
         """Retail creature geosets: ids below 100 always show; group g shows only g*100 + variant
-        (variant 1 when the display doesn't say)."""
+        (variant 1 when the display doesn't say). A customizable model (a ChrModel) sets group 0
+        too: then only id 0 and the chosen one of ids below 100 show."""
         group, variant = divmod(submesh_id, 100)
-        return group == 0 or variant == self.geosets.get(group, 1)
+        if group == 0:
+            return 0 not in self.geosets or variant in (0, self.geosets[0])
+        return variant == self.geosets.get(group, 1)
 
     def drawn_batches(self):
         """Retail batches 3.3.5 can draw: first texture pass, shown geosets, known textures."""
