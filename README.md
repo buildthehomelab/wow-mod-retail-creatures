@@ -180,6 +180,9 @@ A pack repo holds:
 - `hide` on a converted look (retail texture file ids, comma-separated) leaves out every mesh
   drawn with those textures: a mount's saddle, say, which retail always draws (it's no geoset).
   The look gets a model of its own, so other looks on that retail model keep those meshes.
+  `s0`, `s1` or `s2` in it names a creature skin slot instead: for a look that leaves that slot
+  empty, where retail draws nothing (a horse without the banner its model carries), in place of
+  borrowing another look's texture for it.
 - A script that writes the data file from retail's tables (`fetch.py` has the downloads), if the
   list isn't kept by hand.
 - For the server: the generated SQL under `data/sql/db-world/`, and `src/<module>_loader.cpp`
