@@ -244,3 +244,28 @@ module uses.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Delve map feasibility audit
+
+`tools/map_audit.py` creates an offline, hash-recorded inventory for an **explicit**
+retail map ID. Supply a Map DB2 CSV export and community listfile; optionally inspect
+an already downloaded WDT. It does not download, convert, or install game assets.
+
+```bash
+python3 tools/map_audit.py --map-csv Map.csv --listfile community-listfile.csv \
+  --map-id 2680 --wdt earthcrawl.wdt --out earthcrawl-audit.json
+python3 -m unittest discover -s tools -p 'test_map_audit.py'
+```
+
+The tool cross-checks the Map row's WDT file ID against its named map directory,
+rejects truncated chunk streams, records input hashes, and lists directory files.
+The optional WDT's build/file identity remains the caller's responsibility: chunk
+validation alone cannot authenticate that identity. Earthcrawl has multiple map
+entries in modern metadata; never select one by display name alone.
+
+This is **not a complete dependency manifest**: world models, textures, doodads,
+file-ID references and other external dependencies still need recursive inspection.
+A community listfile does not prove a file exists in a particular build. Use the
+pinned CDN retrieval path documented above for reproducible conversion inputs;
+unpinned metadata/file-service downloads are discovery evidence only. A valid WDT
+also does not establish compatibility with the 3.3.5 client or server extractors.
