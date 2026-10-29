@@ -68,6 +68,9 @@ from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, inline_
 #                   (see m2creature.py). Looks whose emitters take the display's particle colours
 #                   get their retail ParticleColor rows, added to the ParticleColor.dbc in --dbc
 #                   (the client's own copy, or the one a patch before this one ships)
+#   model_info      {kind of look: [bounding radius, combat reach]} for the server's
+#                   creature_model_info; a kind not named gets 1 and 1.5. A big creature needs
+#                   its own reach, or players hit it from inside its body
 PACK_FIELDS = ("looks", "root", "first_display", "first_model", "prune_textures", "template", "source")
 TRANSMOG_FIELDS = ("preview_base", "subname", "sort_base")
 
@@ -485,10 +488,12 @@ def main():
     texture_key_slots = {}  # model key: {slot holding an alpha-key copy: the slot it copies}
     warnings = []
     sql_rows = []
+    forms = {}  # display: kind of look, for creature_model_info
     new_cmd, new_cdi = [], []  # rows added to the client DBCs, mirrored into the server's *_dbc tables
     client_cmd = {}  # the client's own model rows the server lacks, by id: mirrored too
     for l in looks:
         display = int(l["display"])
+        forms[display] = l["form"]
         if pack["transmog"]:
             preview = int(l["preview"]) if l.get("preview") else pack["preview_base"] + display - pack["first_display"]
             sql_rows.append((display, l["form"], l["name"], int(l["tier"]), preview))
@@ -775,7 +780,7 @@ def main():
     for w in warnings:
         print("warning:", w)
     if args.sql:
-        write_sql(args.sql, pack, sql_rows, new_cdi, new_cmd, [client_cmd[k] for k in sorted(client_cmd)])
+        write_sql(args.sql, pack, sql_rows, new_cdi, new_cmd, [client_cmd[k] for k in sorted(client_cmd)], forms)
 
 
 def sql_str(s):
@@ -806,7 +811,7 @@ FORMS_TABLE = """CREATE TABLE IF NOT EXISTS `mod_transmog_plus_forms` (
 """
 
 
-def write_sql(path, pack, rows, new_cdi, new_cmd, client_cmd=()):
+def write_sql(path, pack, rows, new_cdi, new_cmd, client_cmd=(), forms=None):
     """The pack's world SQL, which its repo ships as a server module: the looks for
     mod-transmog-plus, one creature per look for the addon's preview (3.3.5 model frames can show
     a creature entry, not a display id), and the patch's new DBC rows for the server's stores."""
@@ -815,7 +820,8 @@ def write_sql(path, pack, rows, new_cdi, new_cmd, client_cmd=()):
         f.write("-- %s\n" % pack["source"])
         if pack["transmog"]:
             write_transmog_sql(f, pack, rows)
-        write_dbc_sql(f, new_cdi, new_cmd, client_cmd)
+        info = {display: pack.get("model_info", {}).get(form, (1, 1.5)) for display, form in (forms or {}).items()}
+        write_dbc_sql(f, new_cdi, new_cmd, client_cmd, info)
     print("wrote", path)
 
 
@@ -853,7 +859,7 @@ def write_transmog_sql(f, pack, rows):
     f.write(",\n".join("(%d, 0, %d, 1, 1)" % (e, d) for e, d, _n in previews) + ";\n\n")
 
 
-def write_dbc_sql(f, new_cdi, new_cmd, client_cmd):
+def write_dbc_sql(f, new_cdi, new_cmd, client_cmd, info=None):
     """The patch's new DBC rows, as rows of the server's *_dbc tables."""
     if not new_cdi:
         return
@@ -882,7 +888,7 @@ def write_dbc_sql(f, new_cdi, new_cmd, client_cmd):
         f.write(cmd_insert + cmd_values(client_cmd))
     f.write("DELETE FROM `creature_model_info` WHERE `DisplayID` BETWEEN %d AND %d;\n" % (min(ids), max(ids)))
     f.write("INSERT INTO `creature_model_info` (`DisplayID`, `BoundingRadius`, `CombatReach`, `Gender`, `DisplayID_Other_Gender`) VALUES\n")
-    f.write(",\n".join("(%d, 1, 1.5, 2, 0)" % d for d in ids) + ";\n")
+    f.write(",\n".join("(%d, %g, %g, 2, 0)" % ((d,) + tuple((info or {}).get(d, (1, 1.5)))) for d in ids) + ";\n")
 
 
 if __name__ == "__main__":
