@@ -13,7 +13,9 @@ build would. That is tens of thousands of files: run it with RETAIL_SOURCE=cdn.
 --also names tsv files with a retail_display column (a pack's wish list, such as
 wow-mod-retail-collection's wanted-looks.tsv): the models of those looks are probed too, even
 when the client has them or they are no creature model, for a pack that wants them as its own.
-Writes displays.tsv (one row per mount or pet display), models.tsv (one row per model) and
+A display there that is no mount or pet look (a plain creature's, such as a rare's) is listed
+too, as kind "creature", named after the file's name column when it has one.
+Writes displays.tsv (one row per mount, pet or creature display), models.tsv (one row per model) and
 models.json (everything probe() found).
 """
 import argparse
@@ -199,6 +201,16 @@ def main():
             if d != "0" and ("pet", p["ID"], d) not in seen:
                 seen.add(("pet", p["ID"], d))
                 looks.append(("pet", p["ID"], c["Name_lang"], d))
+    # A display a pack asks for that no mount or pet wears: a creature look of its own.
+    also, listed = set(), {d for _k, _i, _n, d in looks}
+    for path in args.also:
+        with open(path, encoding="utf-8") as f:
+            for r in csv.DictReader(f, delimiter="\t"):
+                also.add(r["retail_display"])
+                if r["retail_display"] not in listed:
+                    listed.add(r["retail_display"])
+                    looks.append(("creature", r["retail_display"], r.get("name") or "display " + r["retail_display"],
+                                  r["retail_display"]))
 
     fdids = set()
     for kind, _id, _name, d in looks:
@@ -215,7 +227,7 @@ def main():
             return "stock"
         return "hd" if low in have else ""
 
-    rows, models = [], collections.defaultdict(lambda: {"mount": set(), "pet": set(), "displays": set()})
+    rows, models = [], collections.defaultdict(lambda: {"mount": set(), "pet": set(), "creature": set(), "displays": set()})
     for kind, _id, name, d in looks:
         row = cdi.get(d)
         if not row or row["ModelID"] not in cmd:
@@ -252,7 +264,7 @@ def main():
     print("mounts: %d in Mount, %d with a display" % (len(mounts), len({r[1] for r in rows if r[0] == "mount"})))
     print("pets: %d species, %d hidden from the journal, %d without a Creature row, %d listed" % (
         pets_total, pets_hidden, pets_nocreature, len({r[1] for r in rows if r[0] == "pet"})))
-    for kind in ("mount", "pet"):
+    for kind in ("mount", "pet") + (("creature",) if any(r[0] == "creature" for r in rows) else ()):
         by = collections.Counter(r[6] for r in rows if r[0] == kind)
         things = collections.defaultdict(set)
         for r in rows:
@@ -269,10 +281,6 @@ def main():
     if not args.models:
         return
     # The models of looks a pack asked for by name are probed whatever their status.
-    also = set()
-    for path in args.also:
-        with open(path, encoding="utf-8") as f:
-            also.update(r["retail_display"] for r in csv.DictReader(f, delimiter="\t"))
     probed = dict(new)
     probed.update((fd, m) for fd, m in models.items() if m["displays"] & also)
     if also:

@@ -79,7 +79,9 @@ Nothing from Blizzard is stored here or in the packs; the files come from
   patch). `--also <tsv>` (any file with a `retail_display` column) probes the models of those
   looks too, though the client has them or they are no creature model: for a pack that wants
   them as its own looks (wow-mod-retail-library does, for mounts the client lacks on models it
-  has). `tools/client_files.py` writes what it needs to know about the client: the list of
+  has). A display there that no mount or pet wears is listed too, as kind `creature` (named
+  after the file's `name` column), for a pack that wants a plain creature's look.
+  `tools/client_files.py` writes what it needs to know about the client: the list of
   its `Creature\` files, and the three creature DBCs the client ends up using, which are also
   the ones `build_patch.py --dbc` wants.
 - `tools/contact_sheet.py` turns a census into a review page: every look that needs a converted
