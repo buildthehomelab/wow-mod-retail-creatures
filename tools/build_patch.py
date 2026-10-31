@@ -531,10 +531,13 @@ def main():
         # without it): retail draws them always, they're no geoset the client could hide.
         # s0-s2 name a creature skin slot instead: the meshes drawn with it go, for a look that
         # leaves the slot empty where retail then draws nothing (a horse without the banner its
-        # model carries), rather than borrowing another look's texture.
+        # model carries), rather than borrowing another look's texture. m<n> names a mesh: skin
+        # section n of retail's skin 0, for a saddle drawn with the body's own texture.
         hide_names = [x for x in l.get("hide", "").split(",") if x]
         hide_slots = sorted({int(x[1:]) for x in hide_names if x.startswith("s")})
-        hide = tuple(sorted({int(x) for x in hide_names if not x.startswith("s")})) + tuple("s%d" % k for k in hide_slots)
+        hide_meshes = sorted({int(x[1:]) for x in hide_names if x.startswith("m")})
+        hide = (tuple(sorted({int(x) for x in hide_names if x[0] not in "sm"})) + tuple("s%d" % k for k in hide_slots)
+                + tuple("m%d" % k for k in hide_meshes))
         folder = "%s\\%s" % (pack["root"], l.get("folder") or folder_name(l["model"]))
         # A customizable mount's body textures come from its customization choices (see fetch.py).
         chosen = custom.get(l["retail_display"], {})
@@ -552,6 +555,7 @@ def main():
 
             def converter():
                 c = Converter(raw, skins(lod), anims, valid, stem, effects=bool(pack.get("effects")))
+                c.hidden_sections = set(hide_meshes)
                 if pack["prune_textures"]:
                     c.mask_textures = {i for i, fd in enumerate(m.txid) if any(
                         w in os.path.basename(texture_names.get(fd, "")) for w in MASK_WORDS)}
@@ -561,6 +565,9 @@ def main():
             if missing:
                 sys.exit("%d %s: hide names textures the model doesn't have: %s" % (
                     display, l["name"], ", ".join(map(str, sorted(missing)))))
+            sections = len(Skin(skins(0)).submeshes)
+            if any(k >= sections for k in hide_meshes):
+                sys.exit("%d %s: hide names meshes past the %d of retail's skin 0" % (display, l["name"], sections))
             # Skin 0 unless the mesh drawn overflows it: then the next, lower-detail skin.
             while True:
                 conv = converter()
@@ -597,8 +604,8 @@ def main():
                     m2, skin = conv.convert(textures, dict(geosets))
                     break
                 except SkinOverflow as e:
-                    if lod + 1 == len(m.sfid):
-                        raise
+                    if lod + 1 == len(m.sfid) or hide_meshes:
+                        raise  # (a lower-detail skin numbers its meshes differently)
                     lod += 1
                     overflow = e
             files.update(tex_files)
