@@ -6,8 +6,8 @@
 Reads every archive of the client in load order (the extra ones last: realm patches the folder
 doesn't hold). Writes client-files.json ({"files": {lower-case path: archive that wins},
 "stock": [paths the unpatched 3.3.5a archives have]}) and the copies of CreatureDisplayInfo.dbc,
-CreatureModelData.dbc and AnimationData.dbc the client ends up using, which are also what
-build_patch.py --dbc wants.
+CreatureModelData.dbc, AnimationData.dbc, SoundEntries.dbc and CreatureSoundData.dbc the client
+ends up using, which are also what build_patch.py --dbc wants.
 """
 import argparse
 import ctypes
@@ -18,7 +18,9 @@ import sys
 STOCK = ("common.mpq", "common-2.mpq", "expansion.mpq", "lichking.mpq", "patch.mpq", "patch-2.mpq", "patch-3.mpq")
 DBCS = {"dbfilesclient\\creaturedisplayinfo.dbc": "CreatureDisplayInfo.dbc",
         "dbfilesclient\\creaturemodeldata.dbc": "CreatureModelData.dbc",
-        "dbfilesclient\\animationdata.dbc": "AnimationData.dbc"}
+        "dbfilesclient\\animationdata.dbc": "AnimationData.dbc",
+        "dbfilesclient\\soundentries.dbc": "SoundEntries.dbc",
+        "dbfilesclient\\creaturesounddata.dbc": "CreatureSoundData.dbc"}
 H = ctypes.c_void_p
 
 

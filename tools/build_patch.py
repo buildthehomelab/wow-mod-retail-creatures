@@ -68,6 +68,11 @@ from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, inline_
 #                   (see m2creature.py). Looks whose emitters take the display's particle colours
 #                   get their retail ParticleColor rows, added to the ParticleColor.dbc in --dbc
 #                   (the client's own copy, or the one a patch before this one ships)
+#   sounds          {"first_entry": SoundEntries id, "first_data": CreatureSoundData id}: each look
+#                   sounds like its retail display (see RetailSounds), with retail's .ogg files in
+#                   the patch. --dbc then also holds SoundEntries.dbc and CreatureSoundData.dbc
+#                   (the client's own, or the ones a patch before this one ships), and a later
+#                   patch that ships SoundEntries.dbc has to be built on this one's
 #   model_info      {kind of look: [bounding radius, combat reach]} for the server's
 #                   creature_model_info; a kind not named gets 1 and 1.5. A big creature needs
 #                   its own reach, or players hit it from inside its body
@@ -391,6 +396,162 @@ class ParticleColors:
             f.write(strings)
 
 
+# CreatureSoundData.dbc of 3.3.5a: the column of each retail field that names a SoundKit. The
+# footstep column names a FootstepTerrainLookup group, and NPCSoundID and CreatureImpactType are no
+# sounds either: those three stay the stock creature's.
+CSD_KITS = dict([("SoundExertionID", 1), ("SoundExertionCriticalID", 2), ("SoundInjuryID", 3),
+                 ("SoundInjuryCriticalID", 4), ("SoundInjuryCrushingBlowID", 5), ("SoundDeathID", 6),
+                 ("SoundStunID", 7), ("SoundStandID", 8), ("SoundAggroID", 10), ("SoundWingFlapID", 11),
+                 ("SoundWingGlideID", 12), ("SoundAlertID", 13), ("LoopSoundID", 24),
+                 ("SoundJumpStartID", 26), ("SoundJumpEndID", 27), ("SoundPetAttackID", 28),
+                 ("SoundPetOrderID", 29), ("SoundPetDismissID", 30), ("BirthSoundID", 33),
+                 ("SpellCastDirectedSoundID", 34), ("SubmergeSoundID", 35), ("SubmergedSoundID", 36)]
+                + [("SoundFidget_%d" % i, 14 + i) for i in range(5)]
+                + [("CustomAttack_%d" % i, 19 + i) for i in range(4)])
+SE_FILES = 10  # a 3.3.5a SoundEntries row names at most ten files
+SE_FLAGS = 0x20 | 0x200 | 0x400 | 0x800  # the flag bits 3.3.5a's own rows use; retail added more
+SE_COMBAT = 10  # SoundType for a retail type 3.3.5a doesn't have: NPC combat
+
+
+class RetailSounds:
+    """The base SoundEntries.dbc and CreatureSoundData.dbc, and the retail sound sets the looks
+    need (pack option sounds). A look gets the CreatureSoundData row of its retail display (or of
+    its retail model, where the display names none): each SoundKit in it becomes a SoundEntries
+    row, playing retail's .ogg files from the pack's patch. A kit whose id is a base row with the
+    same files (retail kept the ids of the old sounds) is that row, and ships nothing. Footsteps,
+    NPC greetings and impact type stay those of the stock creature the look clones.
+    New rows go at the end and the base's own stay in their order, as with ParticleColors."""
+
+    def __init__(self, dbc_dir, cache, opts):
+        paths = [os.path.join(dbc_dir, n) for n in ("SoundEntries.dbc", "CreatureSoundData.dbc")]
+        missing = [p for p in paths if not os.path.isfile(p)]
+        if missing:
+            sys.exit("pack option sounds needs %s in --dbc (client_files.py writes them)" % " and ".join(missing))
+        self.se, self.csd = read_dbc(paths[0]), read_dbc(paths[1])
+        self.cache = cache
+        self.next_entry = opts["first_entry"]
+        self.next_data = opts["first_data"]
+        for rows, first, name in ((self.se[0], self.next_entry, "first_entry"),
+                                  (self.csd[0], self.next_data, "first_data")):
+            if any(r[0] >= first for r in rows):
+                sys.exit("sounds.%s %d: the base already has rows from there on" % (name, first))
+        self.retail = db2(cache, "CreatureSoundData")
+        self.kits = db2(cache, "SoundKit")
+        self.kit_files = collections.defaultdict(list)
+        for r in sorted(db2_rows(cache, "SoundKitEntry"), key=lambda r: int(r["ID"])):
+            self.kit_files[r["SoundKitID"]].append((int(r["FileDataID"]), int(r["Frequency"])))
+        self.base_se = {r[0]: r for r in self.se[0]}
+        self.base_csd = {r[0]: r for r in self.csd[0]}
+        self.types = {r[1] for r in self.se[0]}
+        self.entries = {}  # kit: SoundEntries id (0: none)
+        self.data = {}  # (retail id, stock id): CreatureSoundData id
+        self.rows_by_value = {}
+        self.added_entries = []
+        self.added_data = []
+        self.files = {}  # client path: retail file id
+        self.names = None
+
+    def _string(self, table, offset):
+        strings = table[1]
+        return strings[offset:strings.index(b"\0", offset)].decode("latin-1")
+
+    def _stems(self, names):
+        return {os.path.splitext(n.lower().replace("\\", "/").rsplit("/", 1)[-1])[0] for n in names if n}
+
+    def entry_for(self, kit, warnings):
+        if kit not in self.entries:
+            self.entries[kit] = self._entry(kit, warnings)
+        return self.entries[kit]
+
+    def _entry(self, kit, warnings):
+        k, files = self.kits.get(kit), self.kit_files.get(kit)
+        if not k or not files:
+            return 0
+        if self.names is None:
+            self.names = listfile(self.cache, {f for fs in self.kit_files.values() for f, _q in fs})
+        paths = [self.names.get(f) or "sound/creature/retailsounds/%d.ogg" % f for f, _q in files]
+        base = self.base_se.get(int(kit))
+        if base:
+            have = self._stems(self._string(self.se, base[3 + i]) for i in range(SE_FILES))
+            if have and have <= self._stems(paths):
+                return base[0]
+        if len(files) > SE_FILES:
+            warnings.append("sound kit %s: %d files, the first %d kept" % (kit, len(files), SE_FILES))
+        folder = paths[0].rsplit("/", 1)[0].replace("/", "\\")
+        row = [0] * self.se[2]
+        row[0] = self.next_entry
+        self.next_entry += 1
+        row[1] = int(k["SoundType"]) if int(k["SoundType"]) in self.types else SE_COMBAT
+        row[2] = add_string(self.se[1], "RetailKit%s" % kit)
+        taken = {}
+        for i, ((fdid, freq), path) in enumerate(list(zip(files, paths))[:SE_FILES]):
+            name = path.rsplit("/", 1)[-1]
+            if taken.get(name, fdid) != fdid:
+                name = "%d_%s" % (fdid, name)
+            taken[name] = fdid
+            self.files["%s\\%s" % (folder, name)] = fdid
+            row[3 + i] = add_string(self.se[1], name)
+            row[13 + i] = max(1, freq)
+        row[23] = add_string(self.se[1], folder)
+        row[24] = f32(k["VolumeFloat"])
+        row[25] = int(k["Flags"]) & SE_FLAGS
+        row[26] = f32(k["MinDistance"])
+        row[27] = f32(k["DistanceCutoff"])
+        row[28] = int(k["EAXDef"])
+        self.se[0].append(row)
+        self.added_entries.append(row[0])
+        return row[0]
+
+    def row_for(self, retail_id, stock_id, display, warnings):
+        """The CreatureSoundData id for a look with retail sound set retail_id, cloning a stock
+        display whose set is stock_id."""
+        if not int(retail_id or 0):
+            return stock_id
+        if (retail_id, stock_id) not in self.data:
+            r = self.retail.get(retail_id)
+            if not r:
+                warnings.append("%d: retail CreatureSoundData %s is missing: stock sounds" % (display, retail_id))
+                return stock_id
+            row = list(self.base_csd.get(stock_id) or [0] * self.csd[2])
+            for field, col in CSD_KITS.items():
+                row[col] = self.entry_for(r[field], warnings) if int(r[field]) else 0
+            row[31] = f32(r["FidgetDelaySecondsMin"])
+            row[32] = f32(r["FidgetDelaySecondsMax"])
+            row[37] = 0  # CreatureSoundDataIDPet
+            value = tuple(row[1:])
+            if value not in self.rows_by_value:
+                row[0] = self.next_data
+                self.next_data += 1
+                self.csd[0].append(row)
+                self.added_data.append(row[0])
+                self.rows_by_value[value] = row[0]
+            self.data[(retail_id, stock_id)] = self.rows_by_value[value]
+        return self.data[(retail_id, stock_id)]
+
+    def write(self, work, files):
+        """The two tables and the sound files, into the patch's file list."""
+        for name, table in (("SoundEntries.dbc", self.se), ("CreatureSoundData.dbc", self.csd)):
+            rows, strings, fields = table
+            path = os.path.join(work, name)
+            with open(path, "wb") as f:
+                f.write(struct.pack("<4s4I", b"WDBC", len(rows), fields, fields * 4, len(strings)))
+                for r in rows:
+                    f.write(struct.pack("<%dI" % fields, *r))
+                f.write(strings)
+            files["DBFilesClient\\" + name] = ("file", path)
+        sound_dir = os.path.join(work, "sounds")
+        os.makedirs(sound_dir, exist_ok=True)
+        size = 0
+        for name, fdid in self.files.items():
+            path = os.path.join(sound_dir, "%d.ogg" % fdid)
+            if not os.path.isfile(path):
+                open(path, "wb").write(casc(self.cache, fdid))
+            size += os.path.getsize(path)
+            files[name] = ("file", path)
+        print("%d CreatureSoundData rows, %d SoundEntries rows, %d sound files (%.1f MB) added" % (
+            len(self.added_data), len(self.added_entries), len(self.files), size / 1e6))
+
+
 def folder_name(model):
     return "".join(p[:1].upper() + p[1:] for p in model.split("_"))
 
@@ -436,6 +597,7 @@ def main():
     cmd_rows, cmd_str, cmd_fields = read_dbc(os.path.join(args.dbc, "CreatureModelData.dbc"))
     taken = {r[0] for r in cdi_rows}
     colors = ParticleColors(args.dbc, args.cache) if pack.get("effects") else None
+    sounds = RetailSounds(args.dbc, args.cache, pack["sounds"]) if pack.get("sounds") else None
     if colors and colors.rows:
         # A patch that ships ParticleColor.dbc replaces the whole table: built on the client's
         # copy instead of the one a patch before it ships, it drops that patch's rows.
@@ -689,6 +851,8 @@ def main():
         row[3] = 0
         if pack.get("plain"):
             row[2] = row[12] = 0  # SoundID, NPCSoundID
+        elif sounds:
+            row[2] = sounds.row_for(rd["SoundID"] if int(rd["SoundID"]) else rm["SoundID"], row[2], display, warnings)
         row[4] = f32(l.get("display_scale") or rd["CreatureModelScale"] or 1)
         row[5] = int(rd["CreatureModelAlpha"]) or 255
         override = [int(x) for x in l.get("textures", "").split(",") if x]
@@ -767,6 +931,8 @@ def main():
         colors.write(path)
         files["DBFilesClient\\ParticleColor.dbc"] = ("file", path)
         print("%d ParticleColor rows added" % len(colors.added))
+    if sounds:
+        sounds.write(args.work, files)
     data = {}  # archive file name -> its files
     if args.dbc_only or (args.data_dir and pack.get("archives")):
         if not args.dbc_only:
