@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Sanity-check a 3.3.5a (MD20 v264) model + skin the way the client reads them: every array
 inside the file, every animated track with one sub-array per sequence, keyframes sorted and
-inside their sequence, skin indexes in range, a bounding box that fits the mesh, and triangles
+inside their sequence, skin indexes in range (a two-texture batch's every texture, its ops in the
+texture combiner combos of a model with flag 0x8), a bounding box that fits the mesh, and triangles
 the mouse hit test can read (each submesh's inside its own vertices, the collision mesh's inside
 the collision vertices).
 
@@ -42,6 +43,13 @@ def check(m2, skin):
         n, off = h[name]
         if n and (off + n * size > len(m2) or off < 0x130):
             errors.append("%s: %d x %d at %d is outside the file" % (name, n, size, off))
+    combos = None
+    if h["global_flags"] & 0x8:  # texture combiner combos: one more array, after the header's last
+        n, off = struct.unpack_from("<II", m2, 0x130)
+        if not n or off + 2 * n > len(m2) or off < 0x138:
+            errors.append("texture combiner combos: %d at %d is outside the file" % (n, off))
+        else:
+            combos = struct.unpack_from("<%dH" % n, m2, off)
     for name, size in (("lights", 156), ("ribbons", 176), ("particles", 476)):
         n, off = h[name]
         if n and (off + n * size > len(m2) or off < 0x130):
@@ -250,14 +258,21 @@ def check(m2, skin):
             errors.append("batch %d: submesh %d" % (i, bt[3]))
         if bt[6] >= h["materials"][0]:
             errors.append("batch %d: material %d" % (i, bt[6]))
-        if bt[9] >= len(tl) or tl[bt[9]] >= ntex:
+        last = bt[8] - 1
+        if not 1 <= bt[8] <= 2:
+            errors.append("batch %d: %d textures" % (i, bt[8]))
+        if bt[9] + last >= len(tl) or any(t >= ntex for t in tl[bt[9]:bt[9] + bt[8]]):
             errors.append("batch %d: texture combo %d" % (i, bt[9]))
-        if bt[10] >= h["texunit_lookup"][0]:
+        if bt[10] + last >= h["texunit_lookup"][0]:
             errors.append("batch %d: texture unit combo %d" % (i, bt[10]))
         if bt[11] >= h["weight_lookup"][0]:
             errors.append("batch %d: weight combo %d" % (i, bt[11]))
-        if bt[12] >= h["transform_lookup"][0]:
+        if bt[12] + last >= h["transform_lookup"][0]:
             errors.append("batch %d: transform combo %d" % (i, bt[12]))
+        if combos is not None and bt[2] + last >= len(combos):
+            errors.append("batch %d: texture combiner combo %d of %d" % (i, bt[2], len(combos)))
+        elif combos is None and last:
+            errors.append("batch %d: two textures in a model without texture combiner combos" % i)
     return errors, dict(sequences=nseq, bones=nb, vertices=nverts, submeshes=len(subs), batches=a[4][0],
                         attachments=h["attachments"][0], events=h["events"][0], cameras=h["cameras"][0],
                         anim_ids=sorted({s[0] for s in seqs}))

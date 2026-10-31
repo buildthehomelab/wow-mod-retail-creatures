@@ -6,7 +6,8 @@ inlined), attachments, key bones, colours, texture weights and transforms, foots
 cameras (the unit portrait), collision, and with effects on: particle emitters, ribbons, lights and
 the retail glow and shine passes (see passes).
 Dropped: sequences with animation ids newer than 3.3.5, emitters that spawn models, and retail
-shader combos 3.3.5 has no pass for (a batch keeps its first texture).
+shader combos 3.3.5 has no pass for (a batch keeps its first texture), except the two-texture
+multiplies 3.3.5 draws itself (see pair).
 """
 import struct
 
@@ -83,6 +84,16 @@ BLEND_ADD = 4
 COMBO_GLOW = {0x01: 1, 0x03: 2, 0x04: 1, 0x05: 1, 0x06: 1, 0x0A: 1, 0x0B: 1, 0x0D: 1, 0x0E: 1, 0x0F: 1}
 TEXUNITS = (UV1, UV2, ENV)  # the converted model's texture unit lookup, with effects on
 NO_DEPTH_WRITE = 0x10  # material flag: a glow pass lies on its mesh and must not hide it
+# 3.3.5 draws two textures in one batch too. With global flag 0x8 the model has one more header
+# array (at 0x130: texture combiner combos, the op of each texture) and a batch's shader field is
+# where its ops start in it; the client builds the same shader word as retail's from them (Wow.exe
+# 0x836980), and picks the combiner by it (0x836600): bits 4-6 the first texture's op, 0-2 the
+# second's (0 Opaque, 1 Mod, 2 Decal, 3 Add, 4 Mod2x, 5 Fade, 6 Mod2xNA, 7 AddNA), the second on
+# the second UV set (Diffuse_T1_T2). The client's own models with flag 0x8 put Mod first in the
+# combos, for every one-texture batch: the same shader the client works out without the flag.
+COMBINER_COMBOS = 0x8
+PAIR_FIRST = (0, 1)  # first ops 3.3.5 has a combiner with every second op for
+PAIR_SECOND = (1, 2, 4, 5, 6)  # the multiplies: a pass of its own can't multiply another texture
 
 
 def chunks(data):
@@ -294,8 +305,8 @@ def anim_buffer(data):
 
 
 class Blob:
-    def __init__(self):
-        self.data = bytearray(HEADER_SIZE)
+    def __init__(self, header_size=HEADER_SIZE):
+        self.data = bytearray(header_size)
 
     def add(self, payload, count):
         if not count:
@@ -372,9 +383,11 @@ class Converter:
         self.kept = [i for i, s in enumerate(self.seqs)
                      if s[0] in valid_anim_ids and self.buffers[self.source[i]] is not None]
         self.new_index = {old: new for new, old in enumerate(self.kept)}
-        self.blob = Blob()
-        self.geosets = {}
         self.skipped_textures = set()
+        # Only a model with a two-texture batch gets the combos (and a header 8 bytes longer).
+        self.combos = [1] if any(self.pair(bt) for bt in self.skin.batches) else None
+        self.blob = Blob(HEADER_SIZE + 8 if self.combos else HEADER_SIZE)
+        self.geosets = {}
         self.hidden_sections = set()  # skin sections (submesh indices) the look leaves out
         self.mask_textures = set()  # texture indices that only shape another texture (see pick)
         self.key_combo = {}  # texture index: texture lookup entry of its alpha-key copy (see convert)
@@ -650,7 +663,7 @@ class Converter:
             if kind == "a":
                 hdr += struct.pack("<II", *h.get(key, (0, 0)))
             elif key == "global_flags":
-                hdr += struct.pack("<I", m.h[key] & 0x7)
+                hdr += struct.pack("<I", m.h[key] & 0x7 | (COMBINER_COMBOS if self.combos else 0))
             elif key == "num_skins":
                 hdr += struct.pack("<I", 1)
             elif key in bounds:
@@ -658,7 +671,10 @@ class Converter:
             else:
                 hdr += struct.pack("<" + kind, *(m.h[key] if isinstance(m.h[key], tuple) else (m.h[key],)))
         assert len(hdr) == HEADER_SIZE, hex(len(hdr))
-        b.data[:HEADER_SIZE] = hdr
+        if self.combos:
+            hdr += struct.pack("<II", *b.add(struct.pack("<%dH" % len(self.combos), *self.combos),
+                                             len(self.combos)))
+        b.data[:len(hdr)] = hdr
         return bytes(b.data), skin
 
     def fit_bounds(self):
@@ -753,6 +769,24 @@ class Converter:
             out.append(bt)
         return out
 
+    def pair(self, bt):
+        """Whether a retail batch stays two textures multiplied in one 3.3.5 batch: a blended mesh
+        (an effect) whose shader multiplies a second texture on the second UV set onto the first,
+        and no environment map. The fire shells of Druid of the Flame: a still fade from one corner
+        of the texture times flames from another, scrolling; either one alone is a haze or hard
+        cards. Others keep one texture and their glow pass (see passes)."""
+        shader, count = bt[2], bt[8]
+        if not self.effects or count != 2 or shader & 0x8000 or shader & 0x88 or not shader & 0x4000:
+            return False
+        if (shader >> 4) & 7 not in PAIR_FIRST or shader & 7 not in PAIR_SECOND:
+            return False
+        if self.m.arr("materials", "<HH")[bt[6]][1] < 2:
+            return False
+        tex_lookup = self.m.arr("texture_lookup", "<h")
+        if bt[9] + 1 >= len(tex_lookup) or tex_lookup[bt[9] + 1][0] in self.skipped_textures:
+            return False
+        return True
+
     def pick(self, bt):
         """Which of a batch's textures to draw with, as an offset into its texture combo.
         3.3.5 gets one texture per batch here. On a solid surface that's the first (the diffuse).
@@ -793,6 +827,8 @@ class Converter:
         k = self.pick(bt)
         if not self.effects:
             return [(k, UV1, None, 0)]
+        if self.pair(bt):
+            return [(0, UV1, None, layer)]  # one batch with both textures (see convert_skin)
         out = [(k, self.coords(shader, count, k), None, layer)]
         if shader & 0x8000:
             glow = COMBO_GLOW.get(shader & 0x7FFF)
@@ -824,6 +860,7 @@ class Converter:
         skip = self.glow_skips(shown, tex_lookup)
         out = {tex_lookup[bt[9] + k] for bt in shown for k, _c, glow, _l in self.passes(bt)
                if bt[9] + k < len(tex_lookup) and (glow is None or tex_lookup[bt[9] + k] not in skip)}
+        out |= {tex_lookup[bt[9] + 1] for bt in shown if self.pair(bt)}
         return out | self.effect_textures()
 
     def glow_skips(self, batches, tex_lookup):
@@ -1089,9 +1126,18 @@ class Converter:
                     combo = self.key_combo[tex]
                     tex = tex_lookup[combo]
                 self.texture_use.setdefault(tex, set()).add(blend)
+                shader, textures = 0, 1
+                if self.pair(bt):  # both textures: UV1 then UV2, the first unit combo
+                    ops = [(bt[2] >> 4) & 7, bt[2] & 7]
+                    at = next((i for i in range(len(self.combos) - 1) if self.combos[i:i + 2] == ops), None)
+                    if at is None:
+                        at = len(self.combos)
+                        self.combos += ops
+                    shader, textures = at, 2
+                    self.texture_use.setdefault(tex_lookup[combo + 1], set()).add(blend)
                 for piece in sub_map[sub]:
-                    batches += struct.pack("<BbHHHhHHHHHHH", flags, prio, 0, piece, piece, color, material,
-                                           out_layer, 1, combo, TEXUNITS.index(unit), weight, transform)
+                    batches += struct.pack("<BbHHHhHHHHHHH", flags, prio, shader, piece, piece, color, material,
+                                           out_layer, textures, combo, TEXUNITS.index(unit), weight, transform)
                     nb += 1
         parts.append(add(batches, nb))
         max_bones = max([x[6] for x in submeshes] + [21])

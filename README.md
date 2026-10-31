@@ -44,6 +44,13 @@ Nothing from Blizzard is stored here or in the packs; the files come from
       AddAlpha family: glowing eyes, runes, a shine) gets that texture as an additive pass of
       its own. The common combo that multiplies an environment map in where the first
       texture's alpha says has no 3.3.5 pass and stays off.
+    - A blended effect mesh whose retail shader multiplies two textures (the second on the
+      second UV set, often scrolling) stays one batch of both: 3.3.5 draws that itself
+      (`Combiners_Mod_Mod2x`, `Diffuse_T1_T2`), from a texture combiner combos array the model
+      then carries (global flag 0x8, like the client's own Arthas or Alexstrasza). Druid of the
+      Flame's fire shells are a still fade from one corner of the texture times flames from
+      another: drawn one texture at a time they were a grey haze over the body. Only models with
+      such a batch change.
     - Emitters coloured by their display (colour index 11-13) get the look's retail
       ParticleColor row, added to the `ParticleColor.dbc` in `--dbc`.
   - Some retail `.anim` files no longer match their model (left over from an older version).
