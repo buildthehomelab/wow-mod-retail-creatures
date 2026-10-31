@@ -185,7 +185,8 @@ A pack repo holds:
   The look gets a model of its own, so other looks on that retail model keep those meshes.
   `s0`, `s1` or `s2` in it names a creature skin slot instead: for a look that leaves that slot
   empty, where retail draws nothing (a horse without the banner its model carries), in place of
-  borrowing another look's texture for it.
+  borrowing another look's texture for it. `m0`, `m1`, ... names a mesh: that skin section of
+  retail's skin 0, for a saddle drawn with the body's own texture (the Great Raven's is `m1`).
 - A script that writes the data file from retail's tables (`fetch.py` has the downloads), if the
   list isn't kept by hand.
 - For the server: the generated SQL under `data/sql/db-world/`, and `src/<module>_loader.cpp`
