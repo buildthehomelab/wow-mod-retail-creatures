@@ -388,6 +388,7 @@ class Converter:
         self.combos = [1] if any(self.pair(bt) for bt in self.skin.batches) else None
         self.blob = Blob(HEADER_SIZE + 8 if self.combos else HEADER_SIZE)
         self.geosets = {}
+        self.hidden_sections = set()  # skin sections (submesh indices) the look leaves out
         self.mask_textures = set()  # texture indices that only shape another texture (see pick)
         self.key_combo = {}  # texture index: texture lookup entry of its alpha-key copy (see convert)
         self.tex_lookup_out = None  # the texture lookup the converted model gets
@@ -761,7 +762,7 @@ class Converter:
             sub, layer, tex_combo = bt[3], bt[7], bt[9]
             if layer != 0 and not self.effects:
                 continue  # retail extra passes (env/glow)
-            if not self.shows(sk.submeshes[sub][0]):
+            if sub in self.hidden_sections or not self.shows(sk.submeshes[sub][0]):
                 continue
             if tex_lookup[tex_combo + self.pick(bt)][0] in self.skipped_textures:
                 continue
@@ -854,8 +855,8 @@ class Converter:
         self.geosets = geosets or {}
         tex_lookup = [x[0] for x in self.m.arr("texture_lookup", "<h")]
         shown = [bt for bt in self.skin.batches
-                 if (bt[7] == 0 or self.effects) and self.shows(self.skin.submeshes[bt[3]][0])
-                 and tex_lookup[bt[9] + self.pick(bt)] not in hidden]
+                 if (bt[7] == 0 or self.effects) and bt[3] not in self.hidden_sections
+                 and self.shows(self.skin.submeshes[bt[3]][0]) and tex_lookup[bt[9] + self.pick(bt)] not in hidden]
         skip = self.glow_skips(shown, tex_lookup)
         out = {tex_lookup[bt[9] + k] for bt in shown for k, _c, glow, _l in self.passes(bt)
                if bt[9] + k < len(tex_lookup) and (glow is None or tex_lookup[bt[9] + k] not in skip)}
