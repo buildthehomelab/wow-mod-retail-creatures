@@ -70,6 +70,7 @@ TABLES = ("Spell", "SpellVisual", "SpellVisualKit")
 # keep retail's volume: most are quiet layers on top of it.
 SE_VOLUME, SE_MIN_DISTANCE, SE_DISTANCE_CUTOFF = 24, 26, 27
 LOUDEST_VOLUME, MIN_DISTANCE, DISTANCE_CUTOFF = 0.7, 8.0, 45.0
+FORM_VOLUME = 1.0  # retail's shapeshift is a soft sound: at 0.7 it is still quiet in game
 
 
 def dbc(table):
@@ -257,10 +258,10 @@ class SpellSounds:
         row = self.sounds.base_se.get(entry)
         return float_of(row[SE_VOLUME]) if row else 0.0
 
-    def _raise_loudest(self, entries):
+    def _raise_loudest(self, entries, volume):
         loudest = max(entries, key=self._volume, default=None)
-        if loudest in self.new_rows and self._volume(loudest) < LOUDEST_VOLUME:
-            self.new_rows[loudest][SE_VOLUME] = f32(LOUDEST_VOLUME)
+        if loudest in self.new_rows and self._volume(loudest) < volume:
+            self.new_rows[loudest][SE_VOLUME] = f32(volume)
 
     def _kit(self, source, entry):
         key = (source, entry)
@@ -274,9 +275,10 @@ class SpellSounds:
             self.made_kits[key] = row[0]
         return self.made_kits[key]
 
-    def give(self, spell_id, retail_kits, template=None):
+    def give(self, spell_id, retail_kits, template=None, loudest=LOUDEST_VOLUME):
         """Gives the spell its own visual: a copy of template (default: the visual it has) with its
-        creature sound replaced by retail_kits, in priority order. Returns the visual's id."""
+        creature sound replaced by retail_kits, in priority order, the loudest of them at volume
+        `loudest` at least. Returns the visual's id."""
         spell = self.spell_by_id.get(spell_id)
         if not spell:
             sys.exit("Spell.dbc has no spell %d" % spell_id)
@@ -293,7 +295,7 @@ class SpellSounds:
             entry = self._entry(kits.pop(0))
             if entry:
                 entries.append(entry)
-        self._raise_loudest(entries)
+        self._raise_loudest(entries, loudest)
         left = len(kits)
         for col in creature:  # the creature sound: retail's first sound, or none
             visual[col] = self._kit(visual[col], entries.pop(0) if entries else 0)
@@ -394,7 +396,7 @@ def main():
             kits = sounds.cast_kits(RETAIL_SPELL.get(spell, spell))
             if not kits:
                 sys.exit("retail plays no sound when spell %d is cast" % spell)
-            sounds.give(spell, kits, template=stock)
+            sounds.give(spell, kits, template=stock, loudest=FORM_VOLUME)
         sounds.write()
         pack_mpq(args.out, [(local, name) for name, local in sorted(files.items())])
         print("%s: %d files, %.1f MB" % (args.out, len(files), os.path.getsize(args.out) / 1e6))
