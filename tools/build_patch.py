@@ -68,7 +68,8 @@ from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, inline_
 #                   (see m2creature.py). Looks whose emitters take the display's particle colours
 #                   get their retail ParticleColor rows, added to the ParticleColor.dbc in --dbc
 #                   (the client's own copy, or the one a patch before this one ships)
-#   sounds          {"first_entry": SoundEntries id, "first_data": CreatureSoundData id}: each look
+#   sounds          {"first_entry": SoundEntries id, "first_data": CreatureSoundData id, and "audible":
+#                   true to lift retail's levels for this client, see RetailSounds}: each look
 #                   sounds like its retail display (see RetailSounds), with retail's .ogg files in
 #                   the patch. --dbc then also holds SoundEntries.dbc and CreatureSoundData.dbc
 #                   (the client's own, or the ones a patch before this one ships), and a later
@@ -410,6 +411,7 @@ CSD_KITS = dict([("SoundExertionID", 1), ("SoundExertionCriticalID", 2), ("Sound
                 + [("CustomAttack_%d" % i, 19 + i) for i in range(4)])
 SE_FILES = 10  # a 3.3.5a SoundEntries row names at most ten files
 SE_FLAGS = 0x20 | 0x200 | 0x400 | 0x800  # the flag bits 3.3.5a's own rows use; retail added more
+AUDIBLE_MIN_DISTANCE, AUDIBLE_DISTANCE_CUTOFF = 8.0, 45.0  # a stock creature sound's
 SE_COMBAT = 10  # SoundType for a retail type 3.3.5a doesn't have: NPC combat
 
 
@@ -420,6 +422,10 @@ class RetailSounds:
     row, playing retail's .ogg files from the pack's patch. A kit whose id is a base row with the
     same files (retail kept the ids of the old sounds) is that row, and ships nothing. Footsteps,
     NPC greetings and impact type stay those of the stock creature the look clones.
+    Retail's levels are lower than this client's: its median volume is about 0.5 where a stock row
+    is 0.8. With option audible a new row carries like a stock creature sound (full within 8 yards,
+    cut off at 45, at the least) and its volume is the square root of retail's, which halves the
+    gap to full volume in dB and keeps a quiet layer quieter than the sound it is on.
     New rows go at the end and the base's own stay in their order, as with ParticleColors."""
 
     def __init__(self, dbc_dir, cache, opts):
@@ -431,6 +437,7 @@ class RetailSounds:
         self.cache = cache
         self.next_entry = opts["first_entry"]
         self.next_data = opts["first_data"]
+        self.audible = opts.get("audible", False)
         for rows, first, name in ((self.se[0], self.next_entry, "first_entry"),
                                   (self.csd[0], self.next_data, "first_data")):
             if any(r[0] >= first for r in rows):
@@ -493,10 +500,13 @@ class RetailSounds:
             row[3 + i] = add_string(self.se[1], name)
             row[13 + i] = max(1, freq)
         row[23] = add_string(self.se[1], folder)
-        row[24] = f32(k["VolumeFloat"])
+        volume, near, far = float(k["VolumeFloat"]), float(k["MinDistance"]), float(k["DistanceCutoff"])
+        if self.audible:
+            volume, near, far = volume ** 0.5, max(near, AUDIBLE_MIN_DISTANCE), max(far, AUDIBLE_DISTANCE_CUTOFF)
+        row[24] = f32(volume)
         row[25] = int(k["Flags"]) & SE_FLAGS
-        row[26] = f32(k["MinDistance"])
-        row[27] = f32(k["DistanceCutoff"])
+        row[26] = f32(near)
+        row[27] = f32(far)
         row[28] = int(k["EAXDef"])
         self.se[0].append(row)
         self.added_entries.append(row[0])
