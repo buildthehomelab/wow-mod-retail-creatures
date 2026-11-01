@@ -79,7 +79,9 @@ Nothing from Blizzard is stored here or in the packs; the files come from
   `RETAIL_SOURCE=cdn`. Its first use downloads 400 MB of indexes for the live retail build and
   takes a couple of minutes; after that a file is one request, wago.tools can be down, and every
   file comes from the same build, which stays pinned until `tact.py --refresh`. Tables still
-  come from wago.tools (cached after the first download).
+  come from wago.tools (cached after the first download). `RETAIL_FALLBACK_CACHE=<dir>` takes a
+  file the pinned build lacks from a second cache pinned to another build (a test build:
+  `tact.Tact(dir, product="wowt")` pins it once). Nothing else comes from there.
 - `tools/census.py` lists every retail mount and battle pet against a client: which it already
   has, which need only textures, which need a converted model, and what the converter makes of
   each of those (it converts them all, animations and textures included, without building a
