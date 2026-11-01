@@ -168,6 +168,11 @@ SpellVisual and SpellVisualKit 90900-90949 and SoundEntries 993000-993099, the c
 91000-92999, 91000-93999 and 993100-994999, the pets module's mounts 94000-94199, 94000-94399 and
 995000-995499.
 
+Retail's levels are too low for this client (the druid's shapeshift is 0.35, a Mechacycle's engine
+is cut off at 8 yards), so a row made here is full within at least 8 yards and cut off at 45 at the
+least, like a stock summon sound, and a spell's loudest sound has a volume of at least 0.7. Its
+other sounds keep retail's volume: most are quiet layers on top of it.
+
 ## Writing a pack
 
 A pack repo holds:
