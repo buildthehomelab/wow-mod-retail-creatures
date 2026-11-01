@@ -19,9 +19,9 @@ too (z88) builds on this patch's copy.
 
 As a library (wow-mod-retail-collection's build_items.py gives every mount its summon sound):
 
-    sounds = SpellSounds(files, sound_dbc, cache, MOUNTS)
+    sounds = SpellSounds(files, sound_dbc, cache, BLOCKS["mounts"], tmp)
     sounds.give(spell, sounds.cast_kits(retail_spell) or sounds.creature_kits(retail_display))
-    sounds.write(tmp)
+    sounds.write()
 
 A block is a tool's own ids (BLOCKS): its rows are made again on every build, so running a tool on
 its own output changes nothing.
@@ -129,7 +129,8 @@ class SpellSounds:
         self.sounds = RetailSounds(work, cache, {"first_entry": top, "first_data": 1 << 30})
         self.sounds.next_entry = block.entries[0]
         # A retail kit an earlier patch already made a row for (druid form sounds in z40) is that row.
-        for r in base[0]:
+        # Only that patch's rows: another block's would go or move when its tool runs again.
+        for r in base[0][:self.base_entries]:
             name = string_at(base[1], r[2])
             if name.startswith("RetailKit"):
                 self.sounds.entries.setdefault(name[len("RetailKit"):], r[0])
@@ -177,7 +178,9 @@ class SpellSounds:
         for x in plain[:1] or rows[:1]:
             for e in sorted(events.get(x["SpellVisualID"], ()), key=lambda e: int(e["ID"])):
                 if e["StartEvent"] in CAST_EVENTS:
-                    kits += [k for k in effects.get(e["SpellVisualKitID"], ()) if k not in kits]
+                    for k in effects.get(e["SpellVisualKitID"], ()):
+                        if k not in kits:
+                            kits.append(k)
         return sorted(kits, key=lambda k: not self._is_creature_kit(k))
 
     def _is_creature_kit(self, kit):
@@ -221,6 +224,12 @@ class SpellSounds:
         folder = string_at(self.sounds.se[1], entry[23]).lower().replace("/", "\\")
         return folder.startswith("sound\\creature")
 
+    def _entry(self, kit):
+        entry = self.sounds.entry_for(kit, self.warnings)
+        if self.sounds.next_entry > self.block.entries[1] + 1:
+            sys.exit("block %s: out of SoundEntries ids" % self.block.name)
+        return entry
+
     def _kit(self, source, entry):
         key = (source, entry)
         if key not in self.made_kits:
@@ -244,16 +253,22 @@ class SpellSounds:
             sys.exit("spell %d already has a visual of block %s: give its stock one as template"
                      % (spell_id, self.block.name))
         visual = list(self.visual_by_id[source])
-        entries = [e for e in (self.sounds.entry_for(k, self.warnings) for k in retail_kits) if e]
         creature = [c for c in KIT_SLOTS if visual[c] and self._creature_sound(visual[c])]
         free = [c for c in FREE_SLOTS if not visual[c]]
+        # A sound gets a row only when a slot takes it: retail's third and later are left out.
+        kits, entries = list(retail_kits), []
+        while kits and len(entries) < len(creature) + len(free):
+            entry = self._entry(kits.pop(0))
+            if entry:
+                entries.append(entry)
+        left = len(kits)
         for col in creature:  # the creature sound: retail's first sound, or none
             visual[col] = self._kit(visual[col], entries.pop(0) if entries else 0)
         for col in free:  # retail's other sounds, in the cast and impact slots the visual leaves empty
             if entries:
                 visual[col] = self._kit(SOUND_ONLY_KIT, entries.pop(0))
-        if entries:
-            self.warnings.append("spell %d: %d of retail's sounds left out (no free kit slot)" % (spell_id, len(entries)))
+        if left:
+            self.warnings.append("spell %d: %d of retail's sounds left out (no free kit slot)" % (spell_id, left))
         key = tuple(visual[1:])
         if key not in self.made_visuals:
             if self.next_visual > self.block.visuals[1]:
