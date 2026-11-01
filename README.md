@@ -143,6 +143,29 @@ the look pack's:
 python3 tools/build_patch.py --pack <pack folder> --dbc <that HD pack's DBCs + AnimationData.dbc> --cache ~/retail-cache --work <work dir> --out patch-Y.MPQ --dbc-only
 ```
 
+### Spell sounds
+
+`tools/spell_sounds.py` gives 3.3.5a spells the sounds retail plays when they're cast. A spell gets
+its own SpellVisual, a copy of the one it has, where the creature sound (a druid form's attack, a
+summon roar) is replaced by retail's cast sounds; retail's other sounds go into the cast and
+impact kits the visual leaves empty. The sounds are SoundEntries rows playing retail's `.ogg`
+files from the same patch.
+
+```bash
+RETAIL_SOURCE=cdn python3 tools/spell_sounds.py --patch patch-z80-spells-and-items.MPQ --sound-dbc <dir> --cache ~/retail-cache --druid-forms --out patch-z80-spells-and-items-new.MPQ
+```
+
+`--druid-forms` gives the nine forms a player shifts into retail's shapeshift sound in place of the
+bear, tiger, walrus, carrion bird, treant and ent attacks. `--patch` is the patch with `Spell.dbc`
+and the SpellVisual tables; `--sound-dbc` holds the `SoundEntries.dbc` and `CreatureSoundData.dbc`
+the client has before it (the druid forms pack's). The patch's own `SoundEntries.dbc` is that
+table plus the rows other tools added to it plus this one's, so a patch that loads later and ships
+the table too is built on this one's copy.
+[wow-mod-retail-collection](https://github.com/buildthehomelab/wow-mod-retail-collection) uses it
+as a library for its mounts' summon sounds. Each tool has its own id block (`BLOCKS`): druid
+forms SpellVisual and SpellVisualKit 90900-90949 and SoundEntries 993000-993099, mounts
+91000-92999, 91000-93999 and 993100-994999.
+
 ## Writing a pack
 
 A pack repo holds:
