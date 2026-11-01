@@ -17,7 +17,8 @@ this patch (z40's), and this patch's copy is that table, the rows other tools ad
 before (kept as they are) and this tool's. A patch that loads after this one and carries the table
 too (z88) builds on this patch's copy.
 
-As a library (wow-mod-retail-collection's build_items.py gives every mount its summon sound):
+As a library (wow-mod-retail-collection's build_items.py and wow-mod-retail-pets' build_pets.py
+give every mount its summon sound):
 
     sounds = SpellSounds(files, sound_dbc, cache, BLOCKS["mounts"], tmp)
     sounds.give(spell, sounds.cast_kits(retail_spell) or sounds.creature_kits(retail_display))
@@ -42,6 +43,7 @@ Block = collections.namedtuple("Block", "name visuals kits entries")
 BLOCKS = {
     "druid-forms": Block("druid-forms", (90900, 90949), (90900, 90949), (993000, 993099)),
     "mounts": Block("mounts", (91000, 92999), (91000, 93999), (993100, 994999)),
+    "pets": Block("pets", (94000, 94199), (94000, 94399), (995000, 995499)),  # wow-mod-retail-pets' mounts
 }
 
 # The druid forms a player shifts into, with the stock visual each has: retail plays one
