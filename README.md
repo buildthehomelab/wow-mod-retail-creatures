@@ -174,6 +174,16 @@ least, like a stock summon sound, and a spell's loudest sound has a volume of at
 the druid forms, whose shapeshift is a soft sound). Its other sounds keep retail's volume: most are
 quiet layers on top of it.
 
+## Sounds for looks already in the client
+
+`tools/look_sounds.py` gives the looks of finished packs their retail sound sets without touching
+a model, for packs whose live patches shouldn't be rebuilt from source (wago.tools may serve other
+models by then). It writes `CreatureDisplayInfo.dbc` with the new SoundIDs (put them in the live
+patches with wow-server's `respin_patch.py --sound-ids-from`), `SoundEntries.dbc` for the patches that
+ship that table, and a patch with `CreatureSoundData.dbc` and the sound files. Its ids are
+SoundEntries 1000000-1019999 and CreatureSoundData 10000-12999. A rebuild of a pack loses its
+SoundIDs, so run the tool again after one.
+
 ## Writing a pack
 
 A pack repo holds:
@@ -200,7 +210,7 @@ A pack repo holds:
   | `transmog` | `false`: no rows for mod-transmog-plus and no preview creatures, so the SQL is the DBC rows only (`preview_base`, `subname` and `sort_base` can then be left out) |
   | `plain` | `true`: the new rows carry no sounds and no footprints, since hundreds of unlike models can't all sound like the one stock creature their kind clones |
   | `effects` | `true`: keep particle emitters, ribbons, lights and the glow and shine passes; looks whose particles take the display's colours get ParticleColor rows (put the client's `ParticleColor.dbc` in `--dbc`) |
-  | `sounds` | `{"first_entry": …, "first_data": …}`: each look sounds like its retail display. Its retail CreatureSoundData row becomes a new row (ids from `first_data`), and each sound in it a SoundEntries row (ids from `first_entry`) playing retail's `.ogg` files, which go into the patch; a sound retail kept from the old game under its old id stays the client's row. Footsteps stay the stock creature's. Put the client's `SoundEntries.dbc` and `CreatureSoundData.dbc` in `--dbc` (`client_files.py` writes them); a patch after this one that ships `SoundEntries.dbc` must be built on this one's |
+  | `sounds` | `{"first_entry": …, "first_data": …}`, and `"audible": true` to lift retail's low levels for this client (volume = its square root, full within 8 yards and cut off at 45 at the least): each look sounds like its retail display. Its retail CreatureSoundData row becomes a new row (ids from `first_data`), and each sound in it a SoundEntries row (ids from `first_entry`) playing retail's `.ogg` files, which go into the patch; a sound retail kept from the old game under its old id stays the client's row. Footsteps stay the stock creature's. Put the client's `SoundEntries.dbc` and `CreatureSoundData.dbc` in `--dbc` (`client_files.py` writes them); a patch after this one that ships `SoundEntries.dbc` must be built on this one's |
   | `customization_geosets` | `true`: a customizable model's look (a ChrModel display: dragonriding drakes, Delver's airships) shows the parts of each customization option's first choice, where retail's display names none; without it every alternative part (all the horns at once) is drawn |
   | `archives` | each kind of look and the MPQ its models and textures go into; with `--data-dir`, those archives are written there and `--out` holds the two DBCs only, so the big archives don't change when another patch's DBC rows do. Two kinds can name the same archive |
 
