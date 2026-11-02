@@ -8,7 +8,9 @@ so the models in the live patches stay as they are (a fresh build from wago.tool
         --sql ../mod-retail-library/data/sql/db-world/mod_retail_library.sql
 
 --sound-dbc holds the SoundEntries.dbc of the realm's spell patch (z80's: the last one before the
-weather patch's) and the CreatureSoundData.dbc of the druid forms patch (z40's). Each look of a
+weather patch's) and the CreatureSoundData.dbc of the druid forms patch (z40's). The weather patch
+(z88) also carries z76's CreatureSoundData with Claws of Shirvallah's row: a new z76 needs that
+pack added to z88 again (wow-server tools/client-patches/README.md), or z88 hides its rows. Each look of a
 pack that has a retail_display gets that display's sound set, with retail's levels lifted for this
 client (option audible, see RetailSounds in build_patch.py). Footsteps and impact type stay those
 of the stock creature its kind clones (pack.json's `template`).
