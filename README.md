@@ -161,10 +161,18 @@ and the SpellVisual tables; `--sound-dbc` holds the `SoundEntries.dbc` and `Crea
 the client has before it (the druid forms pack's). The patch's own `SoundEntries.dbc` is that
 table plus the rows other tools added to it plus this one's, so a patch that loads later and ships
 the table too is built on this one's copy.
-[wow-mod-retail-collection](https://github.com/buildthehomelab/wow-mod-retail-collection) uses it
-as a library for its mounts' summon sounds. Each tool has its own id block (`BLOCKS`): druid
-forms SpellVisual and SpellVisualKit 90900-90949 and SoundEntries 993000-993099, mounts
-91000-92999, 91000-93999 and 993100-994999.
+[wow-mod-retail-collection](https://github.com/buildthehomelab/wow-mod-retail-collection) and
+[wow-mod-retail-pets](https://github.com/buildthehomelab/wow-mod-retail-pets) use it as a library
+for their mounts' summon sounds. Each tool has its own id block (`BLOCKS`): druid forms
+SpellVisual and SpellVisualKit 90900-90949 and SoundEntries 993000-993099, the collection's mounts
+91000-92999, 91000-93999 and 993100-994999, the pets module's mounts 94000-94199, 94000-94399 and
+995000-995499.
+
+Retail's levels are too low for this client (the druid's shapeshift is 0.35, a Mechacycle's engine
+is cut off at 8 yards), so a row made here is full within at least 8 yards and cut off at 45 at the
+least, like a stock summon sound, and a spell's loudest sound has a volume of at least 0.7 (1.0 for
+the druid forms, whose shapeshift is a soft sound). Its other sounds keep retail's volume: most are
+quiet layers on top of it.
 
 ## Writing a pack
 

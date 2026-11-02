@@ -17,7 +17,8 @@ this patch (z40's), and this patch's copy is that table, the rows other tools ad
 before (kept as they are) and this tool's. A patch that loads after this one and carries the table
 too (z88) builds on this patch's copy.
 
-As a library (wow-mod-retail-collection's build_items.py gives every mount its summon sound):
+As a library (wow-mod-retail-collection's build_items.py and wow-mod-retail-pets' build_pets.py
+give every mount its summon sound):
 
     sounds = SpellSounds(files, sound_dbc, cache, BLOCKS["mounts"], tmp)
     sounds.give(spell, sounds.cast_kits(retail_spell) or sounds.creature_kits(retail_display))
@@ -34,7 +35,7 @@ import struct
 import sys
 import tempfile
 
-from build_patch import RetailSounds, pack_mpq, read_dbc
+from build_patch import RetailSounds, f32, pack_mpq, read_dbc
 from fetch import casc, db2, db2_rows
 
 # A tool's ids: SpellVisual, SpellVisualKit and SoundEntries rows.
@@ -42,6 +43,7 @@ Block = collections.namedtuple("Block", "name visuals kits entries")
 BLOCKS = {
     "druid-forms": Block("druid-forms", (90900, 90949), (90900, 90949), (993000, 993099)),
     "mounts": Block("mounts", (91000, 92999), (91000, 93999), (993100, 994999)),
+    "pets": Block("pets", (94000, 94199), (94000, 94399), (995000, 995499)),  # wow-mod-retail-pets' mounts
 }
 
 # The druid forms a player shifts into, with the stock visual each has: retail plays one
@@ -61,6 +63,14 @@ SOUND_ONLY_KIT = 2977  # SummonWarhorseImpact: a kit that plays its sound and no
 CAST_EVENTS = ("3", "6")
 SOUNDKIT_EFFECT = "5"  # SpellVisualKitEffect.EffectType: a SoundKit
 TABLES = ("Spell", "SpellVisual", "SpellVisualKit")
+# Retail's levels are too low for this client: a kit's volume and distances are mixed for retail's
+# engine, and the druid's shapeshift (0.35) or a Mechacycle's engine (cut off at 8 yards) can't be
+# heard here. A stock summon sound is 0.7-0.8, full within 8 yards and cut off at 45, so a new row
+# carries at least that far, and a spell's loudest sound is at least that loud. Its other sounds
+# keep retail's volume: most are quiet layers on top of it.
+SE_VOLUME, SE_MIN_DISTANCE, SE_DISTANCE_CUTOFF = 24, 26, 27
+LOUDEST_VOLUME, MIN_DISTANCE, DISTANCE_CUTOFF = 0.7, 8.0, 45.0
+FORM_VOLUME = 1.0  # retail's shapeshift is a soft sound: at 0.7 it is still quiet in game
 
 
 def dbc(table):
@@ -78,6 +88,10 @@ def write_table(path, table):
 
 def string_at(strings, at):
     return strings[at:strings.index(b"\0", at)].decode("latin-1")
+
+
+def float_of(value):
+    return struct.unpack("<f", struct.pack("<I", value))[0]
 
 
 class SpellSounds:
@@ -137,6 +151,7 @@ class SpellSounds:
 
         self.next_visual, self.next_kit = block.visuals[0], block.kits[0]
         self.made_visuals, self.made_kits = {}, {}
+        self.new_rows, self.retail_volume = {}, {}
         self.warnings = []
         self._retail = None
 
@@ -225,10 +240,28 @@ class SpellSounds:
         return folder.startswith("sound\\creature")
 
     def _entry(self, kit):
+        made = len(self.sounds.added_entries)
         entry = self.sounds.entry_for(kit, self.warnings)
         if self.sounds.next_entry > self.block.entries[1] + 1:
             sys.exit("block %s: out of SoundEntries ids" % self.block.name)
+        if len(self.sounds.added_entries) > made:
+            row = self.new_rows[entry] = self.sounds.se[0][-1]
+            self.retail_volume[entry] = float_of(row[SE_VOLUME])
+            row[SE_MIN_DISTANCE] = f32(max(float_of(row[SE_MIN_DISTANCE]), MIN_DISTANCE))
+            row[SE_DISTANCE_CUTOFF] = f32(max(float_of(row[SE_DISTANCE_CUTOFF]), DISTANCE_CUTOFF))
         return entry
+
+    def _volume(self, entry):
+        """A row's volume as retail or the client has it, whatever an earlier spell raised it to."""
+        if entry in self.retail_volume:
+            return self.retail_volume[entry]
+        row = self.sounds.base_se.get(entry)
+        return float_of(row[SE_VOLUME]) if row else 0.0
+
+    def _raise_loudest(self, entries, volume):
+        loudest = max(entries, key=self._volume, default=None)
+        if loudest in self.new_rows and self._volume(loudest) < volume:
+            self.new_rows[loudest][SE_VOLUME] = f32(volume)
 
     def _kit(self, source, entry):
         key = (source, entry)
@@ -242,9 +275,10 @@ class SpellSounds:
             self.made_kits[key] = row[0]
         return self.made_kits[key]
 
-    def give(self, spell_id, retail_kits, template=None):
+    def give(self, spell_id, retail_kits, template=None, loudest=LOUDEST_VOLUME):
         """Gives the spell its own visual: a copy of template (default: the visual it has) with its
-        creature sound replaced by retail_kits, in priority order. Returns the visual's id."""
+        creature sound replaced by retail_kits, in priority order, the loudest of them at volume
+        `loudest` at least. Returns the visual's id."""
         spell = self.spell_by_id.get(spell_id)
         if not spell:
             sys.exit("Spell.dbc has no spell %d" % spell_id)
@@ -261,6 +295,7 @@ class SpellSounds:
             entry = self._entry(kits.pop(0))
             if entry:
                 entries.append(entry)
+        self._raise_loudest(entries, loudest)
         left = len(kits)
         for col in creature:  # the creature sound: retail's first sound, or none
             visual[col] = self._kit(visual[col], entries.pop(0) if entries else 0)
@@ -361,7 +396,7 @@ def main():
             kits = sounds.cast_kits(RETAIL_SPELL.get(spell, spell))
             if not kits:
                 sys.exit("retail plays no sound when spell %d is cast" % spell)
-            sounds.give(spell, kits, template=stock)
+            sounds.give(spell, kits, template=stock, loudest=FORM_VOLUME)
         sounds.write()
         pack_mpq(args.out, [(local, name) for name, local in sorted(files.items())])
         print("%s: %d files, %.1f MB" % (args.out, len(files), os.path.getsize(args.out) / 1e6))
