@@ -69,11 +69,15 @@ from m2creature import Converter, Retail, Skin, SkinOverflow, StaleSkin, inline_
 #                   get their retail ParticleColor rows, added to the ParticleColor.dbc in --dbc
 #                   (the client's own copy, or the one a patch before this one ships)
 #   sounds          {"first_entry": SoundEntries id, "first_data": CreatureSoundData id, and "audible":
-#                   true to lift retail's levels for this client, see RetailSounds}: each look
+#                   true to lift retail's levels for this client, see RetailSounds, and "replace_own":
+#                   true when --dbc can hold this pack's own earlier rows, which then go}: each look
 #                   sounds like its retail display (see RetailSounds), with retail's .ogg files in
 #                   the patch. --dbc then also holds SoundEntries.dbc and CreatureSoundData.dbc
 #                   (the client's own, or the ones a patch before this one ships), and a later
 #                   patch that ships SoundEntries.dbc has to be built on this one's
+#   anim_replace    {model: {animation id: the id of the model's animation to play as it, or null to
+#                   leave it out}}: for a form retail plays through an AnimReplacementSet, which the
+#                   3.3.5 client doesn't have. Retail's conditions can't carry over: a swap always holds
 #   model_info      {kind of look: [bounding radius, combat reach]} for the server's
 #                   creature_model_info; a kind not named gets 1 and 1.5. A big creature needs
 #                   its own reach, or players hit it from inside its body
@@ -438,6 +442,9 @@ class RetailSounds:
         self.next_entry = opts["first_entry"]
         self.next_data = opts["first_data"]
         self.audible = opts.get("audible", False)
+        if opts.get("replace_own"):
+            self.se[0][:] = [r for r in self.se[0] if r[0] < self.next_entry]
+            self.csd[0][:] = [r for r in self.csd[0] if r[0] < self.next_data]
         for rows, first, name in ((self.se[0], self.next_entry, "first_entry"),
                                   (self.csd[0], self.next_data, "first_data")):
             if any(r[0] >= first for r in rows):
@@ -584,8 +591,13 @@ def main():
     args = ap.parse_args()
     os.makedirs(args.work, exist_ok=True)
     pack = load_pack(args.pack)
+    anim_replace = {model: {int(src): dst for src, dst in swaps.items()}
+                    for model, swaps in pack.get("anim_replace", {}).items()}
 
     looks = load_looks(pack)
+    unknown = set(anim_replace) - {l["model"] for l in looks}
+    if unknown:
+        sys.exit("anim_replace names models no look uses: %s" % ", ".join(sorted(unknown)))
     if args.only:
         only = {int(x) for x in args.only.split(",")}
         looks = [l for l in looks if int(l["display"]) in only]
@@ -726,7 +738,8 @@ def main():
             lod = 0
 
             def converter():
-                c = Converter(raw, skins(lod), anims, valid, stem, effects=bool(pack.get("effects")))
+                c = Converter(raw, skins(lod), anims, valid, stem, effects=bool(pack.get("effects")),
+                              anim_replace=anim_replace.get(l["model"]))
                 c.hidden_sections = set(hide_meshes)
                 if pack["prune_textures"]:
                     c.mask_textures = {i for i, fd in enumerate(m.txid) if any(

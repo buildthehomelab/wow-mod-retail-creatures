@@ -28,6 +28,7 @@ ARRAYS = [  # header M2Arrays after magic/version, in file order ('u' = plain ui
     ("cameras", "a"), ("camera_lookup", "a"), ("ribbons", "a"), ("particles", "a"),
 ]
 
+NO_ANIMATION = 0xFFFF  # no client animation has this id, so the sequence is dropped
 SEQUENCE = "<HHIfIhHIIHH6ffhH"  # retail: blendTimeIn/Out as two uint16
 TRACK = "<HhIIII"
 TRACK_SIZE = 20
@@ -344,10 +345,34 @@ def sequence_hash(anim_ids):
     return table
 
 
+def replace_animations(seqs, replace, name):
+    """The sequences with animation ids swapped: each replaced id's own sequences lose their id, and
+    the sequences of the animation that replaces it take it. The keyframes stay with their sequence."""
+    used = [dst for dst in replace.values() if dst is not None]
+    if len(set(used)) != len(used):
+        raise ValueError("%s: anim_replace plays one animation as two" % name)
+    have = {s[0] for s in seqs}
+    missing = sorted(dst for dst in used if dst not in have)
+    if missing:
+        raise ValueError("%s: anim_replace names animations the model lacks: %s" % (name, missing))
+    played_as = {dst: src for src, dst in replace.items() if dst is not None}
+    out = []
+    for s in seqs:
+        if s[0] in played_as:
+            out.append((played_as[s[0]],) + tuple(s[1:]))
+        elif s[0] in replace:
+            out.append((NO_ANIMATION,) + tuple(s[1:]))
+        else:
+            out.append(s)
+    return out
+
+
 class Converter:
-    def __init__(self, model_data, skin_data, anim_files, valid_anim_ids, name, effects=False):
+    def __init__(self, model_data, skin_data, anim_files, valid_anim_ids, name, effects=False, anim_replace=None):
         """anim_files: {(anim id, variation): .anim bytes} for the model's AFID entries.
-        effects: keep particles, ribbons, lights and the glow and shine passes."""
+        effects: keep particles, ribbons, lights and the glow and shine passes.
+        anim_replace: {anim id: the model's animation to play as it, None to leave it out}, what
+        retail's AnimReplacementSet does at run time (see replace_animations)."""
         self.m = Retail(model_data)
         self.skin = Skin(skin_data)
         self.name = name
@@ -379,9 +404,16 @@ class Converter:
             if not s[4] & SEQ_IN_M2 and self.buffers[i] is not None and not self._fits(i):
                 self.buffers[i] = None  # stale .anim (made for an older model): drop that animation
                 self.dropped.append(s[0])
+        if anim_replace:
+            self.seqs = replace_animations(self.seqs, anim_replace, name)
         # Keep sequences the 3.3.5 client knows, with their data present.
         self.kept = [i for i, s in enumerate(self.seqs)
                      if s[0] in valid_anim_ids and self.buffers[self.source[i]] is not None]
+        if anim_replace:
+            kept_ids = {self.seqs[i][0] for i in self.kept}
+            lost = sorted(src for src, dst in anim_replace.items() if dst is not None and src not in kept_ids)
+            if lost:
+                raise ValueError("%s: anim_replace: animations %s came out with no keyframes" % (name, lost))
         self.new_index = {old: new for new, old in enumerate(self.kept)}
         self.skipped_textures = set()
         # Only a model with a two-texture batch gets the combos (and a header 8 bytes longer).
