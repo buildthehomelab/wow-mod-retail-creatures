@@ -6,6 +6,9 @@ first use, then is much faster, works when wago.tools is down, and takes every f
 pinned retail build. wago.tools pins nothing: of 60 files compared on 2026-10-12, 16 were not
 the live retail build's copy, and six models came with a skin made for another version of
 them. The two sources keep separate caches (<cache>/casc and <cache>/cdn), so they never mix.
+
+RETAIL_FALLBACK_CACHE names a second CDN cache, pinned to another build (a test build's: wowt): a
+file the pinned build lacks comes from there and stays out of the pinned build's cache.
 """
 import collections
 import csv
@@ -21,6 +24,7 @@ DB2 = "https://wago.tools/db2/{}/csv"
 LISTFILE = "https://github.com/wowdev/wow-listfile/releases/latest/download/community-listfile.csv"
 UA = {"User-Agent": "mod-retail-druid-forms/1.0"}
 SOURCE = os.environ.get("RETAIL_SOURCE", "wago")  # wago or cdn
+FALLBACK = os.environ.get("RETAIL_FALLBACK_CACHE")
 _tact, _tact_lock = {}, threading.Lock()
 
 
@@ -62,7 +66,12 @@ def casc(cache, fdid, source=None):
     path = os.path.join(cache, "cdn", str(fdid))
     if os.path.exists(path):
         return open(path, "rb").read()
-    data = tact(cache).read(fdid)
+    try:
+        data = tact(cache).read(fdid)
+    except KeyError:
+        if not FALLBACK or cache == FALLBACK:
+            raise
+        return casc(FALLBACK, fdid, "cdn")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = "%s.%d.part" % (path, threading.get_ident())
     with open(tmp, "wb") as f:
@@ -73,7 +82,8 @@ def casc(cache, fdid, source=None):
 
 def casc_path(cache, fdid):
     casc(cache, fdid)
-    return os.path.join(cache, "cdn" if SOURCE == "cdn" else "casc", str(fdid))
+    path = os.path.join(cache, "cdn" if SOURCE == "cdn" else "casc", str(fdid))
+    return path if os.path.exists(path) or not FALLBACK else os.path.join(FALLBACK, "cdn", str(fdid))
 
 
 def db2(cache, table):
