@@ -168,7 +168,34 @@ the table too is built on this one's copy.
 for their mounts' summon sounds. Each tool has its own id block (`BLOCKS`): druid forms
 SpellVisual and SpellVisualKit 90900-90949 and SoundEntries 993000-993099, the collection's mounts
 91000-92999, 91000-93999 and 993100-994999, the pets module's mounts 94000-94199, 94000-94399 and
-995000-995499.
+995000-995499, class abilities 96000-99999, 96000-99999 and 996000-999999.
+
+`--class-spells` gives what a class learns retail's sound in each part of the cast: precast, cast,
+impact, aura start, aura end and channel. Each rank gets its own SpellVisual, so a creature's spell
+that shares the stock visual keeps its sound; a kit keeps its effects and only its sound changes. A
+part retail has no sound for keeps the stock sound, and so does one that already plays retail's
+files (Reforged's mage and warlock spells). A slot plays one sound, so retail's layers past the
+first are mixed into one `.ogg` (`ffmpeg` and `oggenc` make them, `MIX_LAYERS` and `MIX_FILES`): a
+part that lasts keeps its loop, a channel's or aura's one-shot moves to the cast or impact if retail
+has none there, and a precast's is left out. An aura over 20 seconds plays nothing while it lasts,
+since a loop would run for minutes and a one-shot may replay when the unit comes into view: its
+one-shot moves to the impact and takes the place of a stock aura sound. An aura's loop keeps retail's
+volume. A missile gets retail's sound in flight if that's a loop. New rows use the `audible` levels. `--only`
+takes ability names, and `--tables-only` leaves the rest of `--patch` out, for a test patch that
+loads after every other (`--sound-dbc` then holds the weather patch's `SoundEntries.dbc`).
+
+An ability takes the sounds of its own id in retail, unless retail reused that id (`REUSED_IDS`);
+else of the retail class spell of its name; else what most retail spells of its name share.
+`CLASS_RETAIL` names the spell where those rules pick the wrong one, and `WRONG_SOUND` lists the
+abilities that keep their stock sound. A creature's voice, an object's sound and a kit of only
+sounds the 3.3.5a game already has are left out. `tools/class_spell_visuals.json` keeps the visual
+each changed rank had, so a run on the tool's own output makes the same rows: commit it with a new
+build. Other tools' visuals (forms, mounts) stay as they are.
+
+`--weather-patch` and `--weather-out` also write the weather patch with these rows in its
+`SoundEntries.dbc` and nothing else changed, Claws of Shirvallah included, so it doesn't need
+`weather.py` and the pack again. Build both on the live `z80` and `z88`, with `z40`'s tables in
+`--sound-dbc`, and ship them together: the client plays no new sound with only one of them.
 
 Retail's levels are too low for this client (the druid's shapeshift is 0.35, a Mechacycle's engine
 is cut off at 8 yards), so a row made here is full within at least 8 yards and cut off at 45 at the
