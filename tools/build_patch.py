@@ -634,6 +634,24 @@ def main():
     for l in looks:
         if l.get("client_display") and l["retail_display"]:
             sys.exit("%s: a look has a retail_display or a client_display, not both" % l["display"])
+    # A look can name a model file where retail has no display for it (model_fdid): a model a
+    # game hangs on another one through a spell visual kit, such as WoW Forever's dwarven trade
+    # signs on their post. It gets display and model rows of its own, made up here: scale 1
+    # (display_scale sets another), skin slots from textures, the model's own bounding box, no
+    # sounds of its own (the template's), no particle colours.
+    for l in looks:
+        if not l.get("model_fdid"):
+            continue
+        if l["retail_display"] or l.get("client_display"):
+            sys.exit("%s: a look has a model_fdid, or a retail_display or client_display, not both" % l["display"])
+        key = "file:%s" % l["model_fdid"]
+        box = Retail(inline_skeleton(casc(args.cache, int(l["model_fdid"])), lambda f: casc(args.cache, f))).h["bbox"]
+        cmd_r[key] = {"FileDataID": l["model_fdid"], "SoundID": "0", "ModelScale": "1", "CollisionWidth": "-1",
+                      "CollisionHeight": "-1", "MountHeight": "0",
+                      **{"GeoBox_%d" % k: repr(v) for k, v in enumerate(box)}}
+        cdi_r[key] = {"ModelID": key, "SoundID": "0", "CreatureModelScale": "1", "CreatureModelAlpha": "255",
+                      "ParticleColorID": "0", **{"TextureVariationFileDataID_%d" % k: "0" for k in range(4)}}
+        l["retail_display"] = key
     clash = [l["display"] for l in looks
              if (l["retail_display"] or l.get("client_display")) and int(l["display"]) in taken]
     if clash:
