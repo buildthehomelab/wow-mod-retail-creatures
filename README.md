@@ -259,6 +259,11 @@ A pack repo holds:
   a scale, and where an HD client's model is retail's own, so retail's other colours fit it. A
   model row past the stock 3.3.5a table (an HD pack's) is given to the server with the look.
 - `display_scale` on a converted look sets its display's scale in place of retail's.
+- `model_fdid` (a model's file id, with `retail_display` empty) converts a model retail has no
+  display for: one a game only attaches to another model through a spell visual kit (WoW
+  Forever's dwarven trade signs hang on their post that way). The look's display and model rows
+  are made up: scale 1 or `display_scale`, skin slots from `textures`, the model's own bounding
+  box, the template's sounds.
 - `hide` on a converted look (retail texture file ids, comma-separated) leaves out every mesh
   drawn with those textures: a mount's saddle, say, which retail always draws (it's no geoset).
   The look gets a model of its own, so other looks on that retail model keep those meshes.
